@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "moorlight"
+version = "0.1.0"
+description = "Lightweight Coot-like model building in the browser, with TorchRef real-space refinement and Claude integration"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Tobias Weinert" }]
+requires-python = ">=3.10"
+keywords = ["crystallography", "model building", "coot", "torchref", "real-space refinement", "time-resolved"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Scientific/Engineering :: Visualization",
+]
+dependencies = ["gemmi>=0.7", "numpy", "scipy", "scikit-image", "aiohttp", "torch", "torchref"]
+
+[project.urls]
+Homepage = "https://github.com/MotivatedScientist/moorlight"
+Issues = "https://github.com/MotivatedScientist/moorlight/issues"
+
+[project.scripts]
+moorlight = "moorlight.__main__:main"
+moorlight-mcp = "moorlight.mcp:main"
+
+[tool.setuptools]
+packages = ["moorlight", "moorlight.web"]
+
+[tool.setuptools.package-data]
+moorlight = ["web/*"]

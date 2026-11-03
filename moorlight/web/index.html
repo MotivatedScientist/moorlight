@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Moorlight</title>
+<link rel="stylesheet" href="/static/style.css">
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/",
+  "marked": "https://cdn.jsdelivr.net/npm/marked@12.0.2/lib/marked.esm.js"
+} }
+</script>
+</head>
+<body>
+<div id="app">
+  <div id="toolbar">
+    <span class="brand">Moorlight</span>
+    <button data-tool="refine_zone" title="Real Space Refine Zone: click first and last atom">Refine zone</button>
+    <button data-tool="refine_triple" title="Refine clicked residue ±1 (key R)">Refine triple</button>
+    <button data-tool="refine_sphere" title="Sphere refine around clicked residue (Shift-R)">Sphere</button>
+    <button data-tool="altconf" title="Add alternative conformer to clicked residue, then pull it">Alt conf</button>
+    <button data-tool="rotamers" title="Rotamers of clicked residue">Rotamers</button>
+    <button data-tool="mutate" title="Mutate clicked residue">Mutate</button>
+    <button data-tool="flip" title="Peptide flip (clicked residue / next)">Pepflip</button>
+    <button data-tool="add_residue" title="Add residue at the terminus you click">Add residue</button>
+    <button data-tool="fix" title="Toggle fixed atoms (click atoms; Shift-click a range end)">Fix atoms</button>
+    <button data-tool="delete" title="Delete clicked residue (Shift: atom, Alt: side chain)">Delete</button>
+    <button data-tool="distance" title="Measure distance">Distance</button>
+    <span class="sep"></span>
+    <button id="btn-water" title="Place water at screen centre (W)">+Water</button>
+    <button id="btn-ion" title="Place ion at screen centre">+Ion</button>
+    <button id="btn-ligand" title="Add ligand from a CIF at screen centre">+Ligand</button>
+    <button id="btn-renumber">Renumber</button>
+    <span class="sep"></span>
+    <button id="btn-undo" title="Undo (Ctrl-Z / U); during a refinement: reject">↶ Undo</button>
+    <button id="btn-redo" title="Redo (Ctrl-Shift-Z)">↷ Redo</button>
+    <button id="btn-save">Save</button>
+    <button id="btn-open">Open…</button>
+    <button id="btn-help" title="Keys and mouse (?)">?</button>
+  </div>
+  <div id="main">
+    <div id="viewport">
+      <div id="labels"></div>
+      <div id="refine-banner" class="hidden">
+        <span id="refine-text">Refining…</span>
+        <button id="btn-accept">Accept (Enter)</button>
+        <button id="btn-reject">Reject (Esc)</button>
+      </div>
+      <div id="mode-banner" class="hidden"></div>
+      <div id="popup" class="hidden"></div>
+    </div>
+    <div id="side">
+      <div id="tabs">
+        <button data-tab="display" class="active">Display</button>
+        <button data-tab="analysis">Peaks</button>
+        <button data-tab="chat">Claude</button>
+      </div>
+      <div id="tab-display" class="tab">
+        <div class="row"><input id="goto" placeholder="Go to: A 45  (or A/45)"><button id="btn-goto">Go</button></div>
+        <div class="row"><button id="btn-lig-prev" title="Previous ligand">◀</button>
+          <button id="btn-lig-next" title="Next ligand (skips PEG, glycerol, sulfate, buffers, Na/Cl, uncoordinated metals)">Next ligand ▶</button>
+          <label title="also visit additives (PEG, EDO, SO4, ...)"><input type="checkbox" id="lig-all"> incl. additives</label></div>
+        <h3>Molecules</h3>
+        <div id="mol-list"></div>
+        <h3>Maps <span class="hint">scroll wheel changes the ● map</span></h3>
+        <div id="map-list"></div>
+        <h3>Refinement</h3>
+        <div class="row"><label style="width:62px">target</label>
+          <select id="rsr-target">
+            <option value="map">map (R)</option>
+            <option value="difference">difference (Δ)</option>
+            <option value="both">map + difference</option>
+          </select></div>
+        <div class="row"><label style="width:62px">map wt</label><input id="rsr-weight" type="number" value="60" step="5" style="width:60px">
+          <label>Δ wt</label><input id="rsr-diff-weight" type="number" value="60" step="5" style="width:60px"></div>
+        <div class="row"><label style="width:62px">Δ map</label><select id="rsr-diff-map" style="flex:1"></select></div>
+        <div class="row"><label style="width:62px" title="dark state for the difference target">dark ref</label><select id="rsr-dark" style="flex:1"></select></div>
+        <div class="row"><label title="non-bonded repulsion: off lets you pull atoms on top of each other"><input type="checkbox" id="rsr-nonbonded"> atoms repel</label>
+          <button id="btn-clear-fixed">Clear fixed</button></div>
+        <h3>Log</h3>
+        <div id="log"></div>
+      </div>
+      <div id="tab-analysis" class="tab hidden">
+        <div class="row">map <select id="peak-map"></select> σ <input id="peak-sigma" type="number" value="3.5" step="0.5" style="width:50px">
+          <button id="btn-peaks">List peaks</button></div>
+        <div class="row"><button id="btn-find-waters">Find water sites</button></div>
+        <div id="peak-list"></div>
+      </div>
+      <div id="tab-chat" class="tab hidden">
+        <div id="chat-log"></div>
+        <div id="chat-controls">
+          <textarea id="chat-input" rows="3" placeholder="Ask Claude… it sees your maps, view and selection. Enter sends, Shift-Enter newline."></textarea>
+          <div class="row">
+            <button id="chat-send">Send</button>
+            <button id="chat-stop" class="hidden">Stop</button>
+            <button id="chat-new" title="Start a new conversation">New</button>
+            <label title="Allow Claude to run shell commands (e.g. TorchRef refinements) and write files"><input type="checkbox" id="chat-bash"> shell</label>
+            <span id="chat-status" class="hint"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="status">Ready</div>
+</div>
+<div id="help" class="hidden">
+  <h2>Mouse &amp; keys (Coot 0.9 style)</h2>
+  <table>
+    <tr><td>Left drag</td><td>rotate</td></tr>
+    <tr><td>Ctrl + left drag / middle drag</td><td>translate</td></tr>
+    <tr><td>Right drag (vertical)</td><td>zoom</td></tr>
+    <tr><td>Scroll</td><td>contour level of the ● map (Shift: 5× faster)</td></tr>
+    <tr><td>Middle click / double-click atom</td><td>centre on atom</td></tr>
+    <tr><td>Left click atom</td><td>label / select atom</td></tr>
+    <tr><td>Drag an atom while refining</td><td>pull it</td></tr>
+    <tr><td>Space / Shift-Space</td><td>next / previous residue</td></tr>
+    <tr><td>Ctrl-G or G</td><td>go to residue</td></tr>
+    <tr><td>+ / -</td><td>contour level up / down</td></tr>
+    <tr><td>N / M</td><td>zoom in / out</td></tr>
+    <tr><td>D / F</td><td>slab thinner / thicker</td></tr>
+    <tr><td>R / Shift-R</td><td>refine triple / sphere at the last clicked atom</td></tr>
+    <tr><td>Enter / Esc</td><td>accept / reject refinement (Esc also cancels a tool)</td></tr>
+    <tr><td>W</td><td>water at screen centre</td></tr>
+    <tr><td>Y</td><td>add residue at terminus of clicked atom</td></tr>
+    <tr><td>A</td><td>best-fitting rotamer for clicked residue, then refine</td></tr>
+    <tr><td>Q</td><td>pepflip at clicked residue</td></tr>
+    <tr><td>U / Ctrl-Z</td><td>undo</td></tr>
+    <tr><td>C</td><td>toggle centre cross</td></tr>
+    <tr><td>L</td><td>clear labels</td></tr>
+    <tr><td>?</td><td>this help</td></tr>
+  </table>
+  <p class="hint">Click anywhere to close.</p>
+</div>
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>

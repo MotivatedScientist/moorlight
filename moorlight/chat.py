@@ -31,6 +31,20 @@ long explanations. When you run TorchRef refinements, write outputs to a new dir
 them with load_torchref so the user can inspect them. Keep answers short; the chat panel is narrow."""
 
 
+def _tour_guidance():
+    """Body of the bundled result-tour skill, so the built-in chat follows the same tour conventions."""
+    try:
+        import os
+        with open(os.path.join(os.path.dirname(__file__), "skills", "moorlight-result-tour", "SKILL.md")) as fh:
+            txt = fh.read()
+        return "\n\nWhen the user asks for a tour / walkthrough, follow these rules:\n" + txt.split("---", 2)[-1].strip()
+    except Exception:
+        return ""
+
+
+SYSTEM += _tour_guidance()
+
+
 def _short_state(s):
     lines = []
     for m in s.molecules.values():

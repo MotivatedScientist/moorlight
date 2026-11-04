@@ -20,6 +20,7 @@ def _free_port(preferred, wait=5.0):
 
     def free(p):
         with socket.socket() as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)   # a restarted viewer can take over its old port (TIME_WAIT)
             try:
                 s.bind(("127.0.0.1", p))
                 return True

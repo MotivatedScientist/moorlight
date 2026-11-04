@@ -214,6 +214,35 @@ class Molecule:
         c = pts.mean(0)
         return c.tolist(), float(np.linalg.norm(pts - c, axis=1).max())
 
+    def residue_orientation(self, chain, num, icode="", roll=0.0):
+        """Quaternion (x, y, z, w) that puts the long axis of the side chain horizontal on the screen (CA on the left), its flattest
+        direction toward the viewer (so a thin slab shows the plane of e.g. a polyene or ring) and the third axis vertical.
+        None for single atoms (waters, ions)."""
+        from scipy.spatial.transform import Rotation
+        _, _, res = self.find_residue(chain, num, icode)
+        heavy = [a for a in res if a.element.name != "H"]
+        sc = np.array([a.pos.tolist() for a in heavy if a.name not in ("N", "CA", "C", "O", "OXT")])
+        if len(sc) < 2:
+            return None
+        ca = res.find_atom("CA", "*")
+        cen = sc.mean(0)
+        if len(sc) >= 3:
+            _, _, vt = np.linalg.svd(sc - cen)
+            x, z = vt[0], vt[2]
+        else:                                   # two atoms: long axis = their bond, view direction from the CA side
+            x = sc[1] - sc[0]
+            ref = (np.array(ca.pos.tolist()) - cen) if ca is not None else np.array([0.0, 0.0, 1.0])
+            z = ref - x * (ref @ x) / (x @ x)
+            if np.linalg.norm(z) < 1e-6:
+                z = np.cross(x, [0.0, 0.0, 1.0])
+        x = x / np.linalg.norm(x); z = z - x * (z @ x); z = z / np.linalg.norm(z)
+        if ca is not None and (cen - np.array(ca.pos.tolist())) @ x < 0:   # CA on the left, side chain extends to the right
+            x = -x
+        z = z * (1 if z[np.argmax(np.abs(z))] > 0 else -1)                  # deterministic sign
+        y = np.cross(z, x)
+        r = Rotation.from_euler("z", roll, degrees=True)      # extra roll about the viewing axis (degrees, counter-clockwise on screen if positive)
+        return [float(v) for v in (r * Rotation.from_matrix(np.array([x, y, z]))).as_quat()]
+
     def neighbours_of_residues(self, residue_keys, radius):
         """Residue keys with any atom within radius of any atom of the given residues."""
         idx = [i for i, k in enumerate(self.keys) if k[:3] in residue_keys]

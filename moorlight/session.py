@@ -372,12 +372,15 @@ class Session:
     # ================================================================= view
     @command("Centre the view on a residue and frame it: centred on the side chain (whole residue for waters/ions), zoomed so the "
              "side chain plus `radius` Å of context fits the screen, with a depth slab of +/- `slab` Å so only the relevant atoms are "
-             "drawn (default 2.8 Å; the framed radius is capped at 9 Å for large residues). radius=0 only centres the view (on CA; "
-             "zoom and slab unchanged).",
+             "drawn (default 2.8 Å; the framed radius is capped at 9 Å for large residues). The view is rotated so the long axis of the "
+             "side chain is horizontal (CA on the left) and its flat face looks at the viewer (orient=false keeps the current rotation). "
+             "radius=0 only centres the view (on CA; zoom, slab and rotation unchanged).",
              {**RES, "icode": ("string", "insertion code"), **MOL,
               "radius": ("number", "Å of context around the side chain (default 4.5)"),
-              "slab": ("number", "half-thickness in depth, Å (default 2.8)")}, view_only=True)
-    def goto(self, chain, resseq, icode="", mol=None, radius=4.5, slab=None):
+              "slab": ("number", "half-thickness in depth, Å (default 2.8)"),
+              "orient": ("boolean", "rotate the view: long axis of the side chain horizontal (default true)"),
+              "roll": ("number", "extra roll about the viewing axis in degrees (default 0)")}, view_only=True)
+    def goto(self, chain, resseq, icode="", mol=None, radius=4.5, slab=None, orient=True, roll=0.0):
         m = self.mol(mol)
         if not radius:
             c = m.residue_center(chain, int(resseq), icode)
@@ -387,8 +390,9 @@ class Session:
         fit = min(extent + float(radius), max(9.0, float(radius)))   # large residues (retinal-Lys): do not zoom out beyond ~9 Å
         slab = float(slab) if slab else 2.8
         self.view["center"] = c
-        self.broadcast({"type": "view_cmd", "center": c, "fit_radius": fit, "slab": slab})
-        return {"center": [round(v, 3) for v in c], "fit_radius": round(fit, 2), "slab": round(slab, 2)}
+        q = m.residue_orientation(chain, int(resseq), icode, float(roll)) if orient else None
+        self.broadcast({"type": "view_cmd", "center": c, "fit_radius": fit, "slab": slab, **({"orient": q} if q else {})})
+        return {"center": [round(v, 3) for v in c], "fit_radius": round(fit, 2), "slab": round(slab, 2), "oriented": q is not None}
 
     @command("Centre the view on coordinates.", {"x": ("number", ""), "y": ("number", ""), "z": ("number", "")},
              view_only=True)

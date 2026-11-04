@@ -136,6 +136,7 @@ function onServer(m) {
     case "maps_changed": for (const mm of S.maps.values()) mm.lastCenter = null; scheduleContour(true); break;
     case "view_cmd":
       if (m.center) moveTo(new THREE.Vector3(...m.center));
+      if (m.orient) { rot.quaternion.set(...m.orient); needsRender = true; }   // long axis of the side chain horizontal, flat face to the viewer
       if (m.fit_radius) {   // frame a sphere of fit_radius Å: distance so that it fits the smaller screen dimension; slab = depth half-thickness
         const half = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * Math.min(1, camera.aspect);
         S.zoom = Math.min(400, Math.max(4, m.fit_radius / half));

@@ -372,10 +372,11 @@ class Session:
     # ================================================================= view
     @command("Centre the view on a residue and frame it: centred on the side chain (whole residue for waters/ions), zoomed so the "
              "side chain plus `radius` Å of context fits the screen, with a depth slab of +/- `slab` Å so only the relevant atoms are "
-             "drawn. radius=0 only centres the view (on CA; zoom and slab unchanged).",
+             "drawn (default 2.8 Å; the framed radius is capped at 9 Å for large residues). radius=0 only centres the view (on CA; "
+             "zoom and slab unchanged).",
              {**RES, "icode": ("string", "insertion code"), **MOL,
               "radius": ("number", "Å of context around the side chain (default 4.5)"),
-              "slab": ("number", "half-thickness in depth, Å (default: side-chain extent + 0.8, at least 2)")}, view_only=True)
+              "slab": ("number", "half-thickness in depth, Å (default 2.8)")}, view_only=True)
     def goto(self, chain, resseq, icode="", mol=None, radius=4.5, slab=None):
         m = self.mol(mol)
         if not radius:
@@ -383,8 +384,8 @@ class Session:
             self.set_center(*c)
             return c
         c, extent = m.residue_extent(chain, int(resseq), icode)
-        fit = extent + float(radius)
-        slab = float(slab) if slab else max(2.0, extent + 0.8)
+        fit = min(extent + float(radius), max(9.0, float(radius)))   # large residues (retinal-Lys): do not zoom out beyond ~9 Å
+        slab = float(slab) if slab else 2.8
         self.view["center"] = c
         self.broadcast({"type": "view_cmd", "center": c, "fit_radius": fit, "slab": slab})
         return {"center": [round(v, 3) for v in c], "fit_radius": round(fit, 2), "slab": round(slab, 2)}

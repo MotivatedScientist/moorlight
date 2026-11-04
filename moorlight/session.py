@@ -387,8 +387,13 @@ class Session:
             self.set_center(*c)
             return c
         c, extent = m.residue_extent(chain, int(resseq), icode)
+        user_slab = float(slab) if slab else None
         fit = min(extent + float(radius), max(9.0, float(radius)))   # large residues (retinal-Lys): do not zoom out beyond ~9 Å
-        slab = float(slab) if slab else 2.8
+        slab = user_slab or 2.8
+        if extent < 0.1:   # single atom (water, ion): include its hydrogen-bond / coordination partners
+            reach = m.polar_reach(c, 3.4, exclude_key=(chain, int(resseq), (icode or "").strip())) or 2.8
+            fit = max(6.0, reach + 4.1)
+            slab = user_slab or reach + 0.6
         self.view["center"] = c
         q = m.residue_orientation(chain, int(resseq), icode, float(roll)) if orient else None
         self.broadcast({"type": "view_cmd", "center": c, "fit_radius": fit, "slab": slab, **({"orient": q} if q else {})})

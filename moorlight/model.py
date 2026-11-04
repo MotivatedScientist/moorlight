@@ -214,6 +214,17 @@ class Molecule:
         c = pts.mean(0)
         return c.tolist(), float(np.linalg.norm(pts - c, axis=1).max())
 
+    def polar_reach(self, centre, cutoff=3.4, exclude_key=None):
+        """Distance of the farthest N/O/S atom within `cutoff` of `centre` (a water's hydrogen-bond partners), or None."""
+        from scipy.spatial import cKDTree
+        idx = [i for i, e in enumerate(self.elements) if e in ("N", "O", "S")
+               and (exclude_key is None or self.keys[i][:3] != exclude_key)]
+        if not idx:
+            return None
+        d = np.linalg.norm(self.xyz[idx] - np.asarray(centre), axis=1)
+        d = d[(d > 0.5) & (d <= cutoff)]
+        return float(d.max()) if len(d) else None
+
     def residue_orientation(self, chain, num, icode="", roll=0.0):
         """Quaternion (x, y, z, w) that puts the long axis of the side chain horizontal on the screen (CA on the left), its flattest
         direction toward the viewer (so a thin slab shows the plane of e.g. a polyene or ring) and the third axis vertical.

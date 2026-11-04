@@ -589,19 +589,14 @@ TRS EPE MES BTB CIT FLC TAR TLA MLI MLA SIN CAC B3P MOPS MPO PIP HEPES NHE CXS C
 SO4 PO4 PI 2HP NO3 SCN AZI IOD BR CL NA K CS LI RB NH4 F
 UNX UNL BME DTT DTU TCE IMD HEZ BCN SGM CO2 OXY PER
 BOG LMT LDA C8E HTG DMU UMQ BNG LMU SDS CPS
-""".split())
+OLC PLM DAO HEX HP6 OCT D10 D12 TRD C14 MYS R16 ACE
+""".split())  # last line: lipids / alkanes / acetyl fragments modelled in the rhodopsin (7ZBC-based) structures
+
 METALS = {"MG", "CA", "ZN", "MN", "FE", "FE2", "CO", "NI", "CU", "CU1", "CD", "HG", "MO", "W", "SR", "BA", "YB", "GD"}
 
 
-# Project-specific whitelist: only these residue names count as relevant ligands; every other
-# non-polymer, non-water residue (lipids, alkanes, metals, buffers, ...) is classed as an additive.
-# LYR (retinal-Lys296) is written as ATOM, so whitelisted names are listed even if they are polymer residues.
-RELEVANT_LIGANDS = {"NAG", "LYR"}
-
-
-def list_ligands(mol, relevant_names=None):
-    """Non-polymer, non-water residues; relevant = residue name in ``relevant_names`` (default RELEVANT_LIGANDS),
-    everything else is an additive.
+def list_ligands(mol):
+    """Non-polymer, non-water residues with a guess whether each is biologically relevant.
 
     Returns [{chain, resseq, icode, resname, n_atoms, relevant, reason, center}]."""
     from scipy.spatial import cKDTree
@@ -609,25 +604,28 @@ def list_ligands(mol, relevant_names=None):
     polar = np.array([e in ("N", "O", "S") for e in mol.elements])
     water = np.array([i[3] in WATER for i in mol.info])
     tree = cKDTree(mol.xyz) if len(mol.xyz) else None
-    keep = {n.upper() for n in (relevant_names or RELEVANT_LIGANDS)}
     out = []
     for ch in mol.st[0]:
         for res in ch:
-            if res.name in WATER or (res.entity_type == gemmi.EntityType.Polymer and res.name.upper() not in keep):
+            if res.name in WATER or res.entity_type == gemmi.EntityType.Polymer:
                 continue
             heavy = [a for a in res if a.element.name != "H"]
             if not heavy:
                 continue
             pts = np.array([a.pos.tolist() for a in heavy])
             name = res.name.upper()
-            if name in keep:
-                relevant, reason = True, "ligand"
-            elif name in ADDITIVES:
+            if name in ADDITIVES:
                 relevant, reason = False, "common additive/buffer"
             elif name in METALS or (len(heavy) == 1 and gemmi.Element(heavy[0].element.name).is_metal):
-                relevant, reason = False, "metal/ion (additive)"
+                # metal: relevant when coordinated by >= 2 non-water N/O/S
+                key = (ch.name, res.seqid.num, res.seqid.icode.strip())
+                n = 0
+                for j in tree.query_ball_point(pts[0], 2.8):
+                    if polar[j] and not water[j] and mol.keys[j][:3] != key:
+                        n += 1
+                relevant, reason = (n >= 2), f"metal, {n} non-water ligand atoms"
             else:
-                relevant, reason = False, "additive (not in relevant list)"
+                relevant, reason = True, "ligand"
             out.append({"chain": ch.name, "resseq": res.seqid.num, "icode": res.seqid.icode.strip(),
                         "resname": res.name, "n_atoms": len(heavy), "relevant": relevant, "reason": reason,
                         "center": [round(float(v), 3) for v in pts.mean(0)]})

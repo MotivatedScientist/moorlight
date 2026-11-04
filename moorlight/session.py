@@ -453,12 +453,11 @@ class Session:
         out.sort(key=lambda p: -abs(p["height_sigma"]))
         return out[:max_peaks]
 
-    @command("List ligands (non-polymer, non-water residues). Only NAG and LIG are relevant; everything else "
-             "(lipids, alkanes, metals, buffers, detergents) is flagged as an additive.", {**MOL, "relevant_only": ("boolean", "only the relevant ones"),
-             "relevant_names": ("array", "residue names counted as relevant (default NAG, LIG; all others are additives)")},
-             view_only=True)
-    def ligands(self, mol=None, relevant_only=False, relevant_names=None):
-        out = edit.list_ligands(self.mol(mol), relevant_names)
+    @command("List ligands (non-polymer, non-water residues) with a guess whether each is relevant: common "
+             "additives (PEG, EDO, GOL, SO4, buffers, Na/Cl, detergents, lipids/alkanes) and uncoordinated metals are flagged not "
+             "relevant.", {**MOL, "relevant_only": ("boolean", "only the relevant ones")}, view_only=True)
+    def ligands(self, mol=None, relevant_only=False):
+        out = edit.list_ligands(self.mol(mol))
         return [l for l in out if l["relevant"]] if relevant_only else out
 
     @command("Correlation between two maps around residues (e.g. compare an Fo-Fo map with an Fc-Fc map). "

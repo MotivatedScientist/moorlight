@@ -203,6 +203,57 @@ class Molecule:
         ca = res.find_atom("CA", "*") or res[0]
         return ca.pos.tolist()
 
+    def residue_extent(self, chain, num, icode="", sidechain=True):
+        """(centre, extent) for framing a residue: centroid of the side-chain heavy atoms (everything but N, CA, C, O, OXT; for
+        retinal-Lys etc. that includes the whole ligand part) and the largest distance of those atoms from it. Falls back to all
+        heavy atoms for waters, ions and residues without a side chain; sidechain=False uses all heavy atoms."""
+        _, _, res = self.find_residue(chain, num, icode)
+        heavy = [a for a in res if a.element.name != "H"] or [res[0]]
+        sc = [a for a in heavy if a.name not in ("N", "CA", "C", "O", "OXT")] if sidechain else heavy
+        pts = np.array([a.pos.tolist() for a in (sc or heavy)])
+        c = pts.mean(0)
+        return c.tolist(), float(np.linalg.norm(pts - c, axis=1).max())
+
+    def polar_reach(self, centre, cutoff=3.4, exclude_key=None):
+        """Distance of the farthest N/O/S atom within `cutoff` of `centre` (a water's hydrogen-bond partners), or None."""
+        from scipy.spatial import cKDTree
+        idx = [i for i, e in enumerate(self.elements) if e in ("N", "O", "S")
+               and (exclude_key is None or self.keys[i][:3] != exclude_key)]
+        if not idx:
+            return None
+        d = np.linalg.norm(self.xyz[idx] - np.asarray(centre), axis=1)
+        d = d[(d > 0.5) & (d <= cutoff)]
+        return float(d.max()) if len(d) else None
+
+    def residue_orientation(self, chain, num, icode="", roll=0.0):
+        """Quaternion (x, y, z, w) that puts the long axis of the side chain horizontal on the screen (CA on the left), its flattest
+        direction toward the viewer (so a thin slab shows the plane of e.g. a polyene or ring) and the third axis vertical.
+        None for single atoms (waters, ions)."""
+        from scipy.spatial.transform import Rotation
+        _, _, res = self.find_residue(chain, num, icode)
+        heavy = [a for a in res if a.element.name != "H"]
+        sc = np.array([a.pos.tolist() for a in heavy if a.name not in ("N", "CA", "C", "O", "OXT")])
+        if len(sc) < 2:
+            return None
+        ca = res.find_atom("CA", "*")
+        cen = sc.mean(0)
+        if len(sc) >= 3:
+            _, _, vt = np.linalg.svd(sc - cen)
+            x, z = vt[0], vt[2]
+        else:                                   # two atoms: long axis = their bond, view direction from the CA side
+            x = sc[1] - sc[0]
+            ref = (np.array(ca.pos.tolist()) - cen) if ca is not None else np.array([0.0, 0.0, 1.0])
+            z = ref - x * (ref @ x) / (x @ x)
+            if np.linalg.norm(z) < 1e-6:
+                z = np.cross(x, [0.0, 0.0, 1.0])
+        x = x / np.linalg.norm(x); z = z - x * (z @ x); z = z / np.linalg.norm(z)
+        if ca is not None and (cen - np.array(ca.pos.tolist())) @ x < 0:   # CA on the left, side chain extends to the right
+            x = -x
+        z = z * (1 if z[np.argmax(np.abs(z))] > 0 else -1)                  # deterministic sign
+        y = np.cross(z, x)
+        r = Rotation.from_euler("z", roll, degrees=True)      # extra roll about the viewing axis (degrees, counter-clockwise on screen if positive)
+        return [float(v) for v in (r * Rotation.from_matrix(np.array([x, y, z]))).as_quat()]
+
     def neighbours_of_residues(self, residue_keys, radius):
         """Residue keys with any atom within radius of any atom of the given residues."""
         idx = [i for i, k in enumerate(self.keys) if k[:3] in residue_keys]

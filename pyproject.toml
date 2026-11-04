@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "moorlight"
-version = "0.1.2"
+version = "0.1.3"
 description = "Lightweight Coot-like model building in the browser, with TorchRef real-space refinement and Claude integration"
 readme = "README.md"
 license = "MIT"
@@ -33,4 +33,4 @@ moorlight-mcp = "moorlight.mcp:main"
 packages = ["moorlight", "moorlight.web"]
 
 [tool.setuptools.package-data]
-moorlight = ["web/*"]
+moorlight = ["web/*", "skills/*/SKILL.md"]

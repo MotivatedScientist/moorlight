@@ -370,11 +370,34 @@ class Session:
         return p
 
     # ================================================================= view
-    @command("Centre the view on a residue.", {**RES, "icode": ("string", "insertion code"), **MOL}, view_only=True)
-    def goto(self, chain, resseq, icode="", mol=None):
-        c = self.mol(mol).residue_center(chain, int(resseq), icode)
-        self.set_center(*c)
-        return c
+    @command("Centre the view on a residue and frame it: centred on the side chain (whole residue for waters/ions), zoomed so the "
+             "side chain plus `radius` Å of context fits the screen, with a depth slab of +/- `slab` Å so only the relevant atoms are "
+             "drawn (default 2.8 Å; the framed radius is capped at 9 Å for large residues). The view is rotated so the long axis of the "
+             "side chain is horizontal (CA on the left) and its flat face looks at the viewer (orient=false keeps the current rotation). "
+             "radius=0 only centres the view (on CA; zoom, slab and rotation unchanged).",
+             {**RES, "icode": ("string", "insertion code"), **MOL,
+              "radius": ("number", "Å of context around the side chain (default 4.5)"),
+              "slab": ("number", "half-thickness in depth, Å (default 2.8)"),
+              "orient": ("boolean", "rotate the view: long axis of the side chain horizontal (default true)"),
+              "roll": ("number", "extra roll about the viewing axis in degrees (default 0)")}, view_only=True)
+    def goto(self, chain, resseq, icode="", mol=None, radius=4.5, slab=None, orient=True, roll=0.0):
+        m = self.mol(mol)
+        if not radius:
+            c = m.residue_center(chain, int(resseq), icode)
+            self.set_center(*c)
+            return c
+        c, extent = m.residue_extent(chain, int(resseq), icode)
+        user_slab = float(slab) if slab else None
+        fit = min(extent + float(radius), max(9.0, float(radius)))   # large residues (retinal-Lys): do not zoom out beyond ~9 Å
+        slab = user_slab or 2.8
+        if extent < 0.1:   # single atom (water, ion): include its hydrogen-bond / coordination partners
+            reach = m.polar_reach(c, 3.4, exclude_key=(chain, int(resseq), (icode or "").strip())) or 2.8
+            fit = max(6.0, reach + 4.1)
+            slab = user_slab or reach + 0.6
+        self.view["center"] = c
+        q = m.residue_orientation(chain, int(resseq), icode, float(roll)) if orient else None
+        self.broadcast({"type": "view_cmd", "center": c, "fit_radius": fit, "slab": slab, **({"orient": q} if q else {})})
+        return {"center": [round(v, 3) for v in c], "fit_radius": round(fit, 2), "slab": round(slab, 2), "oriented": q is not None}
 
     @command("Centre the view on coordinates.", {"x": ("number", ""), "y": ("number", ""), "z": ("number", "")},
              view_only=True)

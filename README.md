@@ -36,6 +36,15 @@ claude mcp add moorlight -- python -m moorlight.mcp
 
 Claude can then call `state`, `screenshot`, `goto`, `set_map`, `peaks`, `map_correlation`, `refine`, `add_altconf` and the other commands directly.
 
+## Claude skill: guided result tours
+
+`moorlight --install-skill` copies the bundled `moorlight-result-tour` skill to `~/.claude/skills` (or give a directory). It tells Claude how to
+walk you through results (difference maps, moving residues, waters): plan the stops from the analysis, show one map at a time, frame each target with
+`goto` (residue plus ~5 Å context, depth slab), back every statement with `density_at_atoms` numbers and stop after each stop. The built-in chat uses
+the same rules.
+
+`goto` takes `radius` (Å of context around the residue, default 5; 0 = only centre) and `slab` (depth half-thickness in Å).
+
 ## Notes / limits (v0.1)
 
 - Real-space refinement uses trilinear interpolation of the map and a simple non-bonded repulsion. Ramachandran restraints are not used yet.

@@ -120,7 +120,7 @@ function pushView() {
     const maps = {};
     for (const [id, m] of S.maps) maps[id] = { visible: m.info.visible, level_sigma: m.info.level_sigma };
     const sel = S.selection.filter((s) => s.mol === S.activeMol).map((s) => s.idx);
-    send({ type: "view", center: S.center.toArray().map((v) => +v.toFixed(2)), zoom: S.zoom,
+    send({ type: "view", center: S.center.toArray().map((v) => +v.toFixed(2)), zoom: S.zoom, slab: S.slab,
       selection: sel, clicked: S.clicked ? atomLabel(S.clicked.mol, S.clicked.idx) : null,
       active_map: S.scrollMap, maps });
   }, 150);
@@ -134,7 +134,16 @@ function onServer(m) {
     case "maps": setMaps(m.maps, m.refinement_map); renderRsrSelects(); break;
     case "rsr_settings": setRsrSettings(m.settings); break;
     case "maps_changed": for (const mm of S.maps.values()) mm.lastCenter = null; scheduleContour(true); break;
-    case "view_cmd": if (m.center) moveTo(new THREE.Vector3(...m.center)); break;
+    case "view_cmd":
+      if (m.center) moveTo(new THREE.Vector3(...m.center));
+      if (m.orient) { rot.quaternion.set(...m.orient); needsRender = true; }   // long axis of the side chain horizontal, flat face to the viewer
+      if (m.fit_radius) {   // frame a sphere of fit_radius Å: distance so that it fits the smaller screen dimension; slab = depth half-thickness
+        const half = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * Math.min(1, camera.aspect);
+        S.zoom = Math.min(400, Math.max(4, m.fit_radius / half));
+        S.slab = Math.min(200, Math.max(1, m.slab || m.fit_radius));
+        redraw(); scheduleContour(true); pushView();
+      }
+      break;
     case "log": addLog(m.text); break;
     case "rsr_start": startRSR(m); renderUndo(); break;
     case "rsr_coords": rsrCoords(m); break;
@@ -985,8 +994,8 @@ window.addEventListener("keydown", async (e) => {
     else if (k === "-" || k === "_") { const m = S.maps.get(S.scrollMap); m && changeLevel(m, -0.1); }
     else if (k === "n" || k === "N") { S.zoom = Math.max(4, S.zoom * 0.9); redraw(); }
     else if (k === "m" || k === "M") { S.zoom = Math.min(400, S.zoom * 1.1); redraw(); }
-    else if (k === "d" || k === "D") { S.slab = Math.max(1, S.slab * 0.85); redraw(); }
-    else if (k === "f" || k === "F") { S.slab = Math.min(200, S.slab * 1.15); redraw(); }
+    else if (k === "d" || k === "D") { S.slab = Math.max(1, S.slab * 0.85); redraw(); pushView(); }
+    else if (k === "f" || k === "F") { S.slab = Math.min(200, S.slab * 1.15); redraw(); pushView(); }
     else if (k === "c" || k === "C") { S.cross = !S.cross; redraw(); }
     else if (k === "l" || k === "L") clearLabels();
     else if (k === "?") $("#help").classList.toggle("hidden");

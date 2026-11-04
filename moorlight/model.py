@@ -203,6 +203,13 @@ class Molecule:
         ca = res.find_atom("CA", "*") or res[0]
         return ca.pos.tolist()
 
+    def residue_extent(self, chain, num, icode=""):
+        """(centroid of the heavy atoms of the residue, largest distance of any of its atoms from that centroid)."""
+        _, _, res = self.find_residue(chain, num, icode)
+        pts = np.array([a.pos.tolist() for a in res if a.element.name != "H"] or [res[0].pos.tolist()])
+        c = pts.mean(0)
+        return c.tolist(), float(np.linalg.norm(pts - c, axis=1).max())
+
     def neighbours_of_residues(self, residue_keys, radius):
         """Residue keys with any atom within radius of any atom of the given residues."""
         idx = [i for i, k in enumerate(self.keys) if k[:3] in residue_keys]

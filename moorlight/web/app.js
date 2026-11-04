@@ -134,7 +134,15 @@ function onServer(m) {
     case "maps": setMaps(m.maps, m.refinement_map); renderRsrSelects(); break;
     case "rsr_settings": setRsrSettings(m.settings); break;
     case "maps_changed": for (const mm of S.maps.values()) mm.lastCenter = null; scheduleContour(true); break;
-    case "view_cmd": if (m.center) moveTo(new THREE.Vector3(...m.center)); break;
+    case "view_cmd":
+      if (m.center) moveTo(new THREE.Vector3(...m.center));
+      if (m.fit_radius) {   // frame a sphere of fit_radius Å: distance so that it fits the smaller screen dimension; slab = depth half-thickness
+        const half = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * Math.min(1, camera.aspect);
+        S.zoom = Math.min(400, Math.max(4, m.fit_radius / half));
+        S.slab = Math.min(200, Math.max(1, m.slab || m.fit_radius));
+        redraw(); scheduleContour(true); pushView();
+      }
+      break;
     case "log": addLog(m.text); break;
     case "rsr_start": startRSR(m); renderUndo(); break;
     case "rsr_coords": rsrCoords(m); break;

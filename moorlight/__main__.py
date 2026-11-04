@@ -48,7 +48,18 @@ def main():
     ap.add_argument("--allow-bash", action="store_true",
                     help="let the built-in Claude chat run shell commands (e.g. TorchRef) without asking")
     ap.add_argument("--model", default=None, help="Claude model for the built-in chat")
+    ap.add_argument("--install-skill", nargs="?", const="~/.claude/skills", metavar="DIR",
+                    help="copy the bundled Claude Code skills (result tours) into DIR (default ~/.claude/skills) and exit")
     a = ap.parse_args()
+    if a.install_skill:
+        import shutil
+        src = os.path.join(os.path.dirname(__file__), "skills")
+        dst = os.path.expanduser(a.install_skill)
+        for name in sorted(os.listdir(src)):
+            if os.path.isdir(os.path.join(src, name)):
+                shutil.copytree(os.path.join(src, name), os.path.join(dst, name), dirs_exist_ok=True)
+                print(f"installed skill {name} -> {os.path.join(dst, name)}")
+        return
 
     from aiohttp import web
     from .server import App, write_state_file

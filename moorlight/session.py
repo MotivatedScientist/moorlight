@@ -370,11 +370,23 @@ class Session:
         return p
 
     # ================================================================= view
-    @command("Centre the view on a residue.", {**RES, "icode": ("string", "insertion code"), **MOL}, view_only=True)
-    def goto(self, chain, resseq, icode="", mol=None):
-        c = self.mol(mol).residue_center(chain, int(resseq), icode)
-        self.set_center(*c)
-        return c
+    @command("Centre the view on a residue and frame it: the whole residue plus `radius` Å around it fits the screen, and "
+             "a slab of +/- `slab` Å (default = the framed radius) is kept in depth so only the relevant atoms are drawn. "
+             "radius=0 only centres the view (old behaviour: on CA, zoom and slab unchanged).",
+             {**RES, "icode": ("string", "insertion code"), **MOL,
+              "radius": ("number", "Å of context around the residue (default 5)"),
+              "slab": ("number", "half-thickness in depth, Å (default: residue extent + radius)")}, view_only=True)
+    def goto(self, chain, resseq, icode="", mol=None, radius=5.0, slab=None):
+        m = self.mol(mol)
+        if not radius:
+            c = m.residue_center(chain, int(resseq), icode)
+            self.set_center(*c)
+            return c
+        c, extent = m.residue_extent(chain, int(resseq), icode)
+        fit = extent + float(radius)
+        self.view["center"] = c
+        self.broadcast({"type": "view_cmd", "center": c, "fit_radius": fit, "slab": float(slab) if slab else fit})
+        return {"center": [round(v, 3) for v in c], "fit_radius": round(fit, 2), "slab": round(float(slab) if slab else fit, 2)}
 
     @command("Centre the view on coordinates.", {"x": ("number", ""), "y": ("number", ""), "z": ("number", "")},
              view_only=True)

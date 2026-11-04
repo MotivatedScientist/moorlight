@@ -166,7 +166,15 @@ class App:
             await self.broadcast_async({"type": "chat_reset"})
 
     def make_app(self):
-        app = web.Application(client_max_size=64 * 1024 * 1024)
+        @web.middleware
+        async def no_stale_ui(request, handler):
+            # Revalidate the viewer's HTML/JS/CSS each load so an updated Moorlight is never shadowed by cache.
+            resp = await handler(request)
+            if request.path == "/" or request.path.startswith("/static/"):
+                resp.headers["Cache-Control"] = "no-cache"
+            return resp
+
+        app = web.Application(client_max_size=64 * 1024 * 1024, middlewares=[no_stale_ui])
         app.router.add_get("/", self.index)
         app.router.add_get("/api/commands", self.commands)
         app.router.add_post("/api/cmd", self.cmd)

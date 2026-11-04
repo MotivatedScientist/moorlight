@@ -27,8 +27,11 @@ input, select, textarea { background: #111317; color: var(--text); border: 1px s
 #main { flex: 1; display: flex; min-height: 0; }
 #viewport { flex: 1; position: relative; min-width: 0; }
 #viewport canvas { display: block; width: 100%; height: 100%; }
-#side { width: 360px; min-width: 260px; display: flex; flex-direction: column; background: var(--panel);
+#side { width: 360px; min-width: 260px; flex: none; display: flex; flex-direction: column; background: var(--panel);
   border-left: 1px solid var(--border); }
+#splitter { width: 5px; flex: none; cursor: col-resize; background: var(--panel); touch-action: none; }
+#splitter:hover, #splitter.dragging { background: var(--accent); }
+body.col-resizing { cursor: col-resize; user-select: none; }
 #tabs { display: flex; gap: 2px; padding: 4px; border-bottom: 1px solid var(--border); }
 #tabs button { flex: 1; }
 .tab { flex: 1; overflow: auto; padding: 6px 8px; min-height: 0; }

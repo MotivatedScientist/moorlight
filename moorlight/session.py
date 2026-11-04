@@ -405,10 +405,16 @@ class Session:
 
     @command("Close a map.", {"map_id": ("integer", "")})
     def close_map(self, map_id):
-        self.maps.pop(int(map_id), None)
-        if self.refinement_map == int(map_id):
+        self._require_no_rsr()
+        map_id = int(map_id)
+        if self.maps.pop(map_id, None) is None:
+            raise ValueError(f"no map {map_id}")
+        if self.refinement_map == map_id:
             self.refinement_map = None
+        if self.diff_map == map_id:
+            self.diff_map = None
         self.push_maps()
+        self.push_rsr_settings()
         return "ok"
 
     @command("Close a molecule.", {**MOL})

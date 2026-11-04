@@ -405,7 +405,10 @@ function setMaps(list, refinementMap) {
     m.obj.visible = info.visible;
     if (changed) m.lastCenter = null;
   }
-  for (const [id, m] of S.maps) if (!seen.has(id)) { world.remove(m.obj); S.maps.delete(id); }
+  for (const [id, m] of S.maps) if (!seen.has(id)) {
+    for (const ch of m.obj.children) ch.geometry.dispose();
+    world.remove(m.obj); S.maps.delete(id); redraw();
+  }
   if (S.scrollMap == null || !S.maps.has(S.scrollMap)) {
     const vis = [...S.maps.values()].filter((m) => m.info.visible);
     S.scrollMap = vis.length ? vis[0].info.id : (S.maps.keys().next().value ?? null);
@@ -1053,7 +1056,9 @@ function renderMapList() {
       `<span title="refinement map (target: map)" style="cursor:pointer;color:${S.refinementMap === id ? "#e6c229" : "#444"}">R</span>` +
       (i.kind === "diff"
         ? `<span title="difference map (target: difference)" style="cursor:pointer;color:${S.rsrSettings?.diff_map === id ? "#4fd0ff" : "#444"}">Δ</span>`
-        : `<span style="width:0.7em"></span>`);
+        : `<span style="width:0.7em"></span>`) +
+      `<button title="Close">×</button>`;
+    div.querySelector("button[title='Close']").onclick = () => cmd("close_map", { map_id: id });
     const [radio, cb, num] = div.querySelectorAll("input");
     const rbtn = div.querySelector("span[title^='refinement map']");
     const dbtn = div.querySelector("span[title^='difference map']");
@@ -1191,4 +1196,34 @@ async function init() {
   render();
   new ResizeObserver(() => { resize(); redraw(); }).observe(vp);
 }
+
+// Drag the splitter to resize the side panel; width is remembered per browser.
+(function sidePanelSplitter() {
+  const side = $("#side"), split = $("#splitter"), KEY = "moorlight.sideWidth";
+  const setW = (w) => {
+    w = Math.max(260, Math.min(w, window.innerWidth - 200));
+    side.style.width = w + "px";
+    return w;
+  };
+  try { const w = +localStorage.getItem(KEY); if (w) setW(w); } catch {}
+  split.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    split.setPointerCapture(e.pointerId);
+    split.classList.add("dragging"); document.body.classList.add("col-resizing");
+    const x0 = e.clientX, w0 = side.getBoundingClientRect().width;
+    const move = (ev) => setW(w0 + x0 - ev.clientX);
+    const up = () => {
+      split.removeEventListener("pointermove", move);
+      split.classList.remove("dragging"); document.body.classList.remove("col-resizing");
+      try { localStorage.setItem(KEY, Math.round(side.getBoundingClientRect().width)); } catch {}
+    };
+    split.addEventListener("pointermove", move);
+    split.addEventListener("pointerup", up, { once: true });
+    split.addEventListener("pointercancel", up, { once: true });
+  });
+  split.addEventListener("dblclick", () => {
+    side.style.width = "";
+    try { localStorage.removeItem(KEY); } catch {}
+  });
+})();
 init();

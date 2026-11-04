@@ -589,7 +589,9 @@ TRS EPE MES BTB CIT FLC TAR TLA MLI MLA SIN CAC B3P MOPS MPO PIP HEPES NHE CXS C
 SO4 PO4 PI 2HP NO3 SCN AZI IOD BR CL NA K CS LI RB NH4 F
 UNX UNL BME DTT DTU TCE IMD HEZ BCN SGM CO2 OXY PER
 BOG LMT LDA C8E HTG DMU UMQ BNG LMU SDS CPS
-""".split())
+OLC PLM DAO HEX HP6 OCT D10 D12 TRD C14 MYS R16 ACE
+""".split())  # last line: lipids / alkanes / acetyl fragments modelled in the rhodopsin (7ZBC-based) structures
+
 METALS = {"MG", "CA", "ZN", "MN", "FE", "FE2", "CO", "NI", "CU", "CU1", "CD", "HG", "MO", "W", "SR", "BA", "YB", "GD"}
 
 
@@ -605,14 +607,23 @@ def list_ligands(mol):
     out = []
     for ch in mol.st[0]:
         for res in ch:
-            if res.name in WATER or res.entity_type == gemmi.EntityType.Polymer:
+            if res.name in WATER:
                 continue
+            # polymer residues are skipped, except non-standard ones (e.g. LYR = retinal-Lys296), which are always relevant
+            nonstandard = False
+            if res.entity_type == gemmi.EntityType.Polymer:
+                info = gemmi.find_tabulated_residue(res.name)
+                if info is not None and info.is_standard():
+                    continue
+                nonstandard = True
             heavy = [a for a in res if a.element.name != "H"]
             if not heavy:
                 continue
             pts = np.array([a.pos.tolist() for a in heavy])
             name = res.name.upper()
-            if name in ADDITIVES:
+            if nonstandard:
+                relevant, reason = True, "non-standard residue"
+            elif name in ADDITIVES:
                 relevant, reason = False, "common additive/buffer"
             elif name in METALS or (len(heavy) == 1 and gemmi.Element(heavy[0].element.name).is_metal):
                 # metal: relevant when coordinated by >= 2 non-water N/O/S

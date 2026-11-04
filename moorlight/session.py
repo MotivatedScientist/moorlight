@@ -370,13 +370,13 @@ class Session:
         return p
 
     # ================================================================= view
-    @command("Centre the view on a residue and frame it: the whole residue plus `radius` Å around it fits the screen, and "
-             "a slab of +/- `slab` Å (default = the framed radius) is kept in depth so only the relevant atoms are drawn. "
-             "radius=0 only centres the view (old behaviour: on CA, zoom and slab unchanged).",
+    @command("Centre the view on a residue and frame it: centred on the side chain (whole residue for waters/ions), zoomed so the "
+             "side chain plus `radius` Å of context fits the screen, with a depth slab of +/- `slab` Å so only the relevant atoms are "
+             "drawn. radius=0 only centres the view (on CA; zoom and slab unchanged).",
              {**RES, "icode": ("string", "insertion code"), **MOL,
-              "radius": ("number", "Å of context around the residue (default 5)"),
-              "slab": ("number", "half-thickness in depth, Å (default: residue extent + radius)")}, view_only=True)
-    def goto(self, chain, resseq, icode="", mol=None, radius=5.0, slab=None):
+              "radius": ("number", "Å of context around the side chain (default 4.5)"),
+              "slab": ("number", "half-thickness in depth, Å (default: side-chain extent + 0.8, at least 2)")}, view_only=True)
+    def goto(self, chain, resseq, icode="", mol=None, radius=4.5, slab=None):
         m = self.mol(mol)
         if not radius:
             c = m.residue_center(chain, int(resseq), icode)
@@ -384,9 +384,10 @@ class Session:
             return c
         c, extent = m.residue_extent(chain, int(resseq), icode)
         fit = extent + float(radius)
+        slab = float(slab) if slab else max(2.0, extent + 0.8)
         self.view["center"] = c
-        self.broadcast({"type": "view_cmd", "center": c, "fit_radius": fit, "slab": float(slab) if slab else fit})
-        return {"center": [round(v, 3) for v in c], "fit_radius": round(fit, 2), "slab": round(float(slab) if slab else fit, 2)}
+        self.broadcast({"type": "view_cmd", "center": c, "fit_radius": fit, "slab": slab})
+        return {"center": [round(v, 3) for v in c], "fit_radius": round(fit, 2), "slab": round(slab, 2)}
 
     @command("Centre the view on coordinates.", {"x": ("number", ""), "y": ("number", ""), "z": ("number", "")},
              view_only=True)

@@ -203,10 +203,14 @@ class Molecule:
         ca = res.find_atom("CA", "*") or res[0]
         return ca.pos.tolist()
 
-    def residue_extent(self, chain, num, icode=""):
-        """(centroid of the heavy atoms of the residue, largest distance of any of its atoms from that centroid)."""
+    def residue_extent(self, chain, num, icode="", sidechain=True):
+        """(centre, extent) for framing a residue: centroid of the side-chain heavy atoms (everything but N, CA, C, O, OXT; for
+        retinal-Lys etc. that includes the whole ligand part) and the largest distance of those atoms from it. Falls back to all
+        heavy atoms for waters, ions and residues without a side chain; sidechain=False uses all heavy atoms."""
         _, _, res = self.find_residue(chain, num, icode)
-        pts = np.array([a.pos.tolist() for a in res if a.element.name != "H"] or [res[0].pos.tolist()])
+        heavy = [a for a in res if a.element.name != "H"] or [res[0]]
+        sc = [a for a in heavy if a.name not in ("N", "CA", "C", "O", "OXT")] if sidechain else heavy
+        pts = np.array([a.pos.tolist() for a in (sc or heavy)])
         c = pts.mean(0)
         return c.tolist(), float(np.linalg.norm(pts - c, axis=1).max())
 

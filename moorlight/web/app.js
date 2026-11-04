@@ -120,7 +120,7 @@ function pushView() {
     const maps = {};
     for (const [id, m] of S.maps) maps[id] = { visible: m.info.visible, level_sigma: m.info.level_sigma };
     const sel = S.selection.filter((s) => s.mol === S.activeMol).map((s) => s.idx);
-    send({ type: "view", center: S.center.toArray().map((v) => +v.toFixed(2)), zoom: S.zoom,
+    send({ type: "view", center: S.center.toArray().map((v) => +v.toFixed(2)), zoom: S.zoom, slab: S.slab,
       selection: sel, clicked: S.clicked ? atomLabel(S.clicked.mol, S.clicked.idx) : null,
       active_map: S.scrollMap, maps });
   }, 150);
@@ -993,8 +993,8 @@ window.addEventListener("keydown", async (e) => {
     else if (k === "-" || k === "_") { const m = S.maps.get(S.scrollMap); m && changeLevel(m, -0.1); }
     else if (k === "n" || k === "N") { S.zoom = Math.max(4, S.zoom * 0.9); redraw(); }
     else if (k === "m" || k === "M") { S.zoom = Math.min(400, S.zoom * 1.1); redraw(); }
-    else if (k === "d" || k === "D") { S.slab = Math.max(1, S.slab * 0.85); redraw(); }
-    else if (k === "f" || k === "F") { S.slab = Math.min(200, S.slab * 1.15); redraw(); }
+    else if (k === "d" || k === "D") { S.slab = Math.max(1, S.slab * 0.85); redraw(); pushView(); }
+    else if (k === "f" || k === "F") { S.slab = Math.min(200, S.slab * 1.15); redraw(); pushView(); }
     else if (k === "c" || k === "C") { S.cross = !S.cross; redraw(); }
     else if (k === "l" || k === "L") clearLabels();
     else if (k === "?") $("#help").classList.toggle("hidden");

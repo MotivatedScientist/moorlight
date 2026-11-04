@@ -23,8 +23,9 @@ with one clear statement. The user drives the pace.
 1. **Set up the display, one thing at a time.**
    - Show **one map at a time** when comparing two (e.g. two pipelines): `set_map` visible true for one, false for the other. Contour difference maps at
      the analysis threshold (±3σ unless the analysis used another value) and say which map is shown.
-   - Frame the target with **`goto` (default `radius` 5 Å)**: it centres on the residue, zooms so the whole residue plus ~5 Å fits the screen and keeps a
-     depth slab around it so only the relevant atoms are drawn. Use a smaller `slab` for a cleaner view, `radius=0` to only re-centre. Set the map
+   - Frame the target with **`goto`** (defaults tuned to the user's own framing): it centres on the *side chain* (not the C-alpha), zooms so the side chain
+     plus ~4.5 Å of context fits the screen and keeps a thin depth slab (side-chain extent + ~0.8 Å) so only the relevant atoms are drawn. Override with
+     `radius` / `slab` when the user asks for more or less; `radius=0` only re-centres. Set the map
      contour radius (`set_map radius`) to about the framed radius so the mesh does not fill the screen.
    - Waters and other atoms that are not in the active molecule: make the molecule that contains them active (`set_active_molecule`) before `goto` or
      `density_at_atoms`.

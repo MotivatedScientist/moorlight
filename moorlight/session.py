@@ -35,6 +35,20 @@ RANGE = {"chain": ("string", "chain id"), "start": ("integer", "first residue nu
 MOL = {"mol": ("integer", "molecule id (default: active molecule)")}
 
 
+def _looks_like_difference_map(path, ccp4):
+    """Guess whether a CCP4 map is a difference map: name hint, else mean ~ 0 with comparable positive and negative extremes."""
+    import re
+    base = os.path.basename(path).lower()
+    if re.search(r"(^|[_\-.])(ded|diff|difference|fofo|fo-fo|fofc|mfo-dfc|delfwt|wdf|df)([_\-.]|$)", base) \
+            and not re.search(r"(^|[_\-.])(2fofc|2mfo)", base):
+        return True
+    a = np.asarray(ccp4.grid)
+    sd = float(a.std())
+    if sd == 0:
+        return False
+    return abs(float(a.mean())) < 0.1 * sd and a.min() < -0.5 * a.max() and a.max() > 3.5 * sd and a.min() < -3.5 * sd
+
+
 class Session:
     def __init__(self, workdir=None, sample_rate=3.0):
         self.workdir = workdir or os.getcwd()
@@ -254,10 +268,13 @@ class Session:
         return [x.info() for x in new]
 
     @command("Load a CCP4/MRC map file.", {"path": ("string", "map path"),
-                                            "difference": ("boolean", "contour at +/- level")})
-    def load_map(self, path, difference=False):
+                                            "difference": ("boolean", "contour at +/- level; omit to auto-detect "
+                                                                  "(file name or symmetric +/- density)")})
+    def load_map(self, path, difference=None):
         p = self._path(path)
         ccp4 = gemmi.read_ccp4_map(p, setup=True)
+        if difference is None:
+            difference = _looks_like_difference_map(p, ccp4)
         x = XMap(os.path.basename(p), ccp4.grid, "diff" if difference else "2fofc", os.path.basename(p))
         x.visible = True
         self.maps[x.id] = x
@@ -436,11 +453,12 @@ class Session:
         out.sort(key=lambda p: -abs(p["height_sigma"]))
         return out[:max_peaks]
 
-    @command("List ligands (non-polymer, non-water residues) with a guess whether each is relevant: common "
-             "additives (PEG, EDO, GOL, SO4, buffers, Na/Cl, detergents) and uncoordinated metals are flagged not "
-             "relevant.", {**MOL, "relevant_only": ("boolean", "only the relevant ones")}, view_only=True)
-    def ligands(self, mol=None, relevant_only=False):
-        out = edit.list_ligands(self.mol(mol))
+    @command("List ligands (non-polymer, non-water residues). Only NAG and LIG are relevant; everything else "
+             "(lipids, alkanes, metals, buffers, detergents) is flagged as an additive.", {**MOL, "relevant_only": ("boolean", "only the relevant ones"),
+             "relevant_names": ("array", "residue names counted as relevant (default NAG, LIG; all others are additives)")},
+             view_only=True)
+    def ligands(self, mol=None, relevant_only=False, relevant_names=None):
+        out = edit.list_ligands(self.mol(mol), relevant_names)
         return [l for l in out if l["relevant"]] if relevant_only else out
 
     @command("Correlation between two maps around residues (e.g. compare an Fo-Fo map with an Fc-Fc map). "

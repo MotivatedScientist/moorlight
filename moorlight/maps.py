@@ -37,12 +37,17 @@ PRESETS = [
     ("F-model", "PH-model", "2fofc", "Fmodel"),
     ("Fc_dark", "PHIC_dark", "2fofc", "Fc dark"),
     ("Fc_light", "PHIC_light", "2fofc", "Fc light"),
+    # phenix.fobs_minus_fobs_map, phenix.polder
+    ("FoFo", "PHFc", "diff", "Fo-Fo"),
+    ("mFo-DFc_polder", "PHImFo-DFc_polder", "diff", "polder mFo-DFc"),
+    ("mFo-DFc_bias_omit", "PHImFo-DFc_bias_omit", "diff", "bias-omit mFo-DFc"),
+    ("mFo-DFc_omit", "PHImFo-DFc_omit", "diff", "omit mFo-DFc"),
 ]
 
 DEFAULT_LEVEL = {"2fofc": 1.5, "diff": 3.0}
 COLORS = {"2fofc": "#3d7fff", "diff": "#00e000"}
 # Shown by default when present (one 2fofc-like and one diff-like, or the WDF map).
-DEFAULT_VISIBLE = {"FWT", "2FOFCWT", "DELFWT", "FOFCWT", "WDF"}
+DEFAULT_VISIBLE = {"FWT", "2FOFCWT", "DELFWT", "FOFCWT", "WDF", "FoFo", "mFo-DFc_polder"}
 
 
 def detect_columns(mtz: gemmi.Mtz):
@@ -58,11 +63,35 @@ def detect_columns(mtz: gemmi.Mtz):
     cols = list(mtz.columns)
     for a, b in zip(cols, cols[1:]):
         if a.type == "F" and b.type == "P" and a.label not in used:
+            kind, name = guess_kind(a.label), f"{a.label}/{b.label}"
             up = a.label.upper()
-            kind = "diff" if ("DEL" in up or up.startswith("FOFC") or "MFO-DFC" in up and not up.startswith("2")) else "2fofc"
-            found.append((a.label, b.label, kind, f"{a.label}/{b.label}"))
+            for key, nice in (("BIAS_OMIT", "bias-omit"), ("POLDER", "polder"), ("OMIT", "omit")):
+                if key in up:
+                    name = f"{nice} {a.label}"
+                    break
+            found.append((a.label, b.label, kind, name))
             used.add(a.label)
     return found
+
+
+def guess_kind(f_label):
+    """'diff' for difference-map amplitudes (DELFWT, FOFCWT, mFo-DFc*, FoFo, DF...), else '2fofc'."""
+    up = f_label.upper()
+    if up.startswith("2"):
+        return "2fofc"
+    return "diff" if ("DEL" in up or up.startswith(("FOFC", "FOFO", "FO-FO", "DF", "WDF")) or "MFO-DFC" in up
+                      or "POLDER" in up or "OMIT" in up) else "2fofc"
+
+
+def check_columns(mtz, f, phi):
+    """Raise a readable error unless f is an amplitude-like and phi a phase column of the MTZ."""
+    cols = {c.label: c.type for c in mtz.columns}
+    missing = [c for c in (f, phi) if c not in cols]
+    if missing:
+        raise ValueError(f"column(s) {missing} not in the MTZ; available: {list(cols)} "
+                         "(note: MTZ labels cannot contain spaces)")
+    if cols[phi] != "P":
+        raise ValueError(f"column {phi} has type {cols[phi]}, expected a phase (P)")
 
 
 class XMap:
@@ -85,6 +114,7 @@ class XMap:
         self.visible = False
         self.color = COLORS[kind]
         self.resolution = 2.0  # d_min of the map coefficients (set from the MTZ)
+        self.d_min = None      # user resolution cut-off (None: all data)
         self.radius = 10.0  # contour box half-width in Å (Coot's "map radius")
         self.style = "mesh"
 
@@ -107,12 +137,20 @@ class XMap:
         return self._grid is not None
 
     @classmethod
-    def from_mtz(cls, mtz, f, phi, kind, label, source, sample_rate=3.0, lazy=False):
-        compute = lambda: mtz.transform_f_phi_to_map(f, phi, sample_rate=sample_rate)
+    def from_mtz(cls, mtz, f, phi, kind, label, source, sample_rate=3.0, lazy=False, d_min=None):
+        """d_min: leave out reflections beyond this resolution (to compare data sets at matched resolution)."""
+        if d_min:
+            def compute():
+                a = mtz.get_f_phi(f, phi)
+                a.value_array[a.make_d_array() < d_min] = 0
+                return a.transform_f_phi_to_map(sample_rate=sample_rate)
+        else:
+            compute = lambda: mtz.transform_f_phi_to_map(f, phi, sample_rate=sample_rate)
         # map rms without the FFT (Parseval): sqrt(sum |F|^2 over P1 / V^2), good enough for display
         x = cls(label, None if lazy else compute(), kind, source, f, phi, compute=compute if lazy else None,
-                rms=_rms_estimate(mtz, f) if lazy else None)
-        x.resolution = float(mtz.resolution_high())
+                rms=_rms_estimate(mtz, f, d_min) if lazy else None)
+        x.resolution = max(float(mtz.resolution_high()), d_min or 0)
+        x.d_min = d_min
         return x
 
     def info(self):
@@ -120,7 +158,7 @@ class XMap:
             "id": self.id, "name": self.name, "kind": self.kind, "source": self.source,
             "f": self.f, "phi": self.phi, "rms": self.rms, "level_sigma": self.level_sigma,
             "level_abs": self.level_sigma * self.rms, "visible": self.visible,
-            "color": self.color, "radius": self.radius,
+            "color": self.color, "radius": self.radius, "resolution": round(self.resolution, 2), "d_min": self.d_min,
         }
 
     def spacing(self):
@@ -186,9 +224,11 @@ class XMap:
         return res
 
 
-def _rms_estimate(mtz, f):
+def _rms_estimate(mtz, f, d_min=None):
     """Real-space rms of a map from its amplitudes (Parseval, F000 excluded)."""
     col = np.array(mtz.column_with_label(f), dtype=float)
+    if d_min:
+        col = col[np.array(mtz.make_d_array()) >= d_min]
     col = col[np.isfinite(col)]
     hkl = np.array(mtz.make_miller_array())
     ops = mtz.spacegroup.operations()

@@ -87,14 +87,17 @@ class Molecule:
 
     def __init__(self, path: str | None = None, structure: gemmi.Structure | None = None, name=None,
                  bond_orders: BondOrders | None = None):
-        self.id = next(self._ids)
-        self.path = path
         if structure is None:
             structure = gemmi.read_structure(path)
+        self.id = next(self._ids)      # only after a successful read
+        self.path = path
         structure.setup_entities()
         self.st = structure
         self.name = name or (os.path.basename(path) if path else f"mol{self.id}")
         self.visible = True
+        self.color = None          # carbon colour override (css), None = default per molecule
+        self.style = None          # "sticks" / "lines" (None = viewer default)
+        self.hydrogens = None      # show hydrogens (None = viewer default: hidden)
         self.undo_stack: list[gemmi.Structure] = []
         self.redo_stack: list[gemmi.Structure] = []
         self.fixed: set[tuple] = set()  # atom keys fixed during refinement
@@ -177,7 +180,11 @@ class Molecule:
             "fixed": [self.key_index[k] for k in self.fixed if k in self.key_index],
             "cell": list(self.st.cell.parameters) if self.st.cell.is_crystal() else None,
             "undo": len(self.undo_stack), "redo": len(self.redo_stack),
+            "display": self.display(),
         }
+
+    def display(self):
+        return {"visible": self.visible, "color": self.color, "style": self.style, "hydrogens": self.hydrogens}
 
     # -------------------------------------------------------------- helpers
     def find_residue(self, chain, num, icode=""):

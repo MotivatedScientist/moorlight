@@ -99,6 +99,8 @@ class App:
             "view": s.view, "log": s.log[-50:], "chat": self.chat.history[-100:],
             "chat_settings": self.chat.settings(),
             "rsr_settings": s.rsr_settings(),
+            "tour": {"title": s.tour["title"], "index": s.tour_index,
+                     "stops": [{"name": st.get("name", ""), "text": st.get("text", "")} for st in s.tour["stops"]]},
             "rsr": None if s.rsr is None else {"mol": s.rsr.mol.id, "idx": s.rsr.moving_mol.tolist()},
         }), content_type="application/json")
 
@@ -135,7 +137,7 @@ class App:
         t = m.get("type")
         s = self.s
         if t == "view":
-            for k in ("center", "zoom", "slab", "selection", "clicked", "active_map"):
+            for k in ("center", "orient", "zoom", "slab", "selection", "clicked", "active_map"):
                 if k in m:
                     s.view[k] = m[k]
             for mid, mv in (m.get("maps") or {}).items():

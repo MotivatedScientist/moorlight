@@ -87,3 +87,7 @@ h3 { margin: 10px 0 4px; font-size: 12px; text-transform: uppercase; letter-spac
   #main { flex-direction: column; }
   #side { width: 100%; height: 45%; border-left: 0; border-top: 1px solid var(--border); }
 }
+#tour { border: 1px solid var(--accent); border-radius: 4px; padding: 4px 6px; margin: 4px 0; }
+#tour-name { font-weight: 600; margin: 2px 0; }
+#tour-text { font-size: 12px; line-height: 1.35; }
+#tour-text p { margin: 2px 0; }

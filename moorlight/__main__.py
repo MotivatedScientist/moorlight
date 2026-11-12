@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import socket
 import threading
@@ -34,14 +35,18 @@ def _free_port(preferred, wait=5.0):
         time.sleep(0.25)
     for p in range(preferred + 1, preferred + 50):
         if free(p):
-            print(f"port {preferred} is busy, using {p}")
             return p
     raise RuntimeError("no free port")
 
 
 def main():
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "cmd":     # client mode: drive a running viewer
+        from .client import main as client_main
+        sys.exit(client_main(sys.argv[2:]))
     ap = argparse.ArgumentParser(prog="moorlight", description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
-    ap.add_argument("files", nargs="*", help="PDB/mmCIF models, MTZ files, CCP4 maps, restraint CIFs or TorchRef dirs")
+    ap.add_argument("files", nargs="*", help="PDB/mmCIF models, MTZ files (file.mtz:label names the maps), CCP4 maps (file.map:label), "
+                                             "restraint CIFs or TorchRef dirs.\n`moorlight cmd ...` drives a running viewer (see `moorlight cmd --help`)")
     ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8765)))
     ap.add_argument("--no-browser", action="store_true")
     ap.add_argument("--workdir", default=None, help="directory for chat / relative paths (default: first file's dir)")
@@ -66,7 +71,12 @@ def main():
     from .server import App, write_state_file
     from .session import Session
 
-    files = [os.path.abspath(f) for f in a.files]
+    files, labels = [], {}
+    for f in a.files:     # file.mtz:label
+        if not os.path.exists(f) and ":" in f and os.path.exists(f.rsplit(":", 1)[0]):
+            f, lab = f.rsplit(":", 1)
+            labels[os.path.abspath(f)] = lab
+        files.append(os.path.abspath(f))
     workdir = a.workdir or (files[0] if files and os.path.isdir(files[0]) else
                             os.path.dirname(files[0]) if files else os.getcwd())
     port = _free_port(a.port)
@@ -83,9 +93,9 @@ def main():
             elif low.endswith(".cif"):
                 s.add_dictionary(f)
             elif low.endswith(".mtz"):
-                s.load_mtz(f)
+                s.load_mtz(f, label=labels.get(f))
             elif low.endswith((".map", ".ccp4", ".mrc")):
-                s.load_map(f)
+                s.load_map(f, label=labels.get(f))
             else:
                 print(f"skipping {f}: unknown type")
         except Exception as e:
@@ -96,10 +106,24 @@ def main():
 
     url = f"http://127.0.0.1:{port}/"
     write_state_file(url, s.workdir)
-    print(f"Moorlight: {url}")
+    if port != a.port:
+        print(f"port {a.port} is busy, using {port}", flush=True)
     if not a.no_browser:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
-    web.run_app(app.make_app(), host="127.0.0.1", port=port, print=None)
+    webapp = app.make_app()
+
+    async def forget_state_file(_):
+        from .server import STATE_FILE
+        try:
+            with open(STATE_FILE) as fh:
+                if json.load(fh).get("pid") == os.getpid():
+                    os.remove(STATE_FILE)
+        except Exception:
+            pass
+
+    webapp.on_cleanup.append(forget_state_file)
+    # printed once the port is open: an agent can wait for this line
+    web.run_app(webapp, host="127.0.0.1", port=port, print=lambda _: print(f"Moorlight ready: {url}", flush=True))
 
 
 def _quiet(fn):

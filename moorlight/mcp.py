@@ -12,29 +12,11 @@ from __future__ import annotations
 import argparse
 import base64
 import json
-import os
 import sys
-import urllib.request
 
-STATE_FILE = os.path.expanduser("~/.moorlight/server.json")
+from .client import http as _http, viewer_url
+
 PROTOCOL = "2025-06-18"
-
-
-def _url(cli):
-    if cli:
-        return cli.rstrip("/")
-    try:
-        with open(STATE_FILE) as fh:
-            return json.load(fh)["url"].rstrip("/")
-    except Exception:
-        return "http://127.0.0.1:8765"
-
-
-def _http(url, path, body=None):
-    req = urllib.request.Request(url + path, data=None if body is None else json.dumps(body).encode(),
-                                 headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=600) as r:
-        return json.loads(r.read())
 
 
 def _schema(params):
@@ -43,7 +25,7 @@ def _schema(params):
         t = p["type"]
         props[k] = {"type": t, "description": p["description"]}
         if t == "array":
-            props[k]["items"] = {"type": "string"}
+            props[k]["items"] = {}
     return {"type": "object", "properties": props}
 
 
@@ -51,7 +33,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--url")
     a = ap.parse_args()
-    url = _url(a.url)
+    try:
+        url = viewer_url(a.url)
+    except RuntimeError as e:
+        sys.stderr.write(f"{e}\n")
+        url = a.url or "http://127.0.0.1:8765"
     out = sys.stdout
 
     def send(obj):

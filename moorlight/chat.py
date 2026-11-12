@@ -19,7 +19,9 @@ crystallographic (mostly time-resolved, TorchRef difference-refinement) work. Th
 models and maps. Use the mcp__moorlight__* tools to inspect and change what they see:
 - state: what is loaded/visible (maps with contour levels in sigma, centre, selected atoms, refinement status)
 - screenshot: returns an image of the current view
-- goto / set_map / peaks / map_correlation / density_at_atoms for analysis
+- goto / goto_atom / frame_atoms / set_map / set_molecule / solo to show things; label_atoms / show_distance to annotate
+- peaks / map_correlation / density_at_atoms / density_profile / distance / density_at_point for analysis
+- save_view / restore_view, and tour_add / tour_save for tours the user can step through
 - set_refinement_options: target "map" (2mFo-DFc-like map), "difference" (fit light-minus-dark model density
   to a difference map such as WDF, dark reference = dark model / other altlocs / start coordinates) or "both";
   non-bonded repulsion is off by default

@@ -1,6 +1,6 @@
 ---
 name: moorlight-result-tour
-description: How to walk a user through crystallographic results (difference maps, moving residues, waters, comparisons between two data sets or pipelines) in a running Moorlight viewer. Use when the user asks for a tour, walkthrough, "show me", or to present/compare results with the mcp__moorlight__* tools.
+description: How to walk a user through crystallographic results (difference maps, moving residues, waters, comparisons between two data sets or pipelines) in a running Moorlight viewer. Use when the user asks for a tour, walkthrough, "show me", or to present/compare results with the mcp__moorlight__* tools or `moorlight cmd`.
 ---
 
 # Guided result tours in Moorlight
@@ -10,6 +10,9 @@ with one clear statement. The user drives the pace.
 
 ## Before the first stop
 
+0. **Find the tools.** With the `mcp__moorlight__*` tools, use them. Without them (an MCP server cannot be added to a running session),
+   use the same commands through Bash: `moorlight cmd --list` lists them, `moorlight cmd goto chain=A resseq=85` runs one and prints JSON
+   (values are JSON when possible: `maps=[3,4]`, `atoms='["A/85 SG","B/501 C1"]'`). Below, "call X" means either.
 1. **Check the viewer is live.** Call `state`. If `screenshot` times out, no browser tab is connected: ask the user to open the viewer URL
    (from `~/.moorlight/server.json`) and do not continue silently.
 2. **After any restart of the viewer, re-establish the state.** A browser tab can keep showing the previous view and ignore the first commands
@@ -40,19 +43,31 @@ with one clear statement. The user drives the pace.
      rotation. Single atoms are not rotated.
    - **These defaults are one user's preferences** (fitted to the framing of a dozen residues, waters and a ligand). Treat them as a starting point:
      if the user changes the view, read it back with `state` (centre, zoom and slab are reported) and adjust `radius`, `slab` and `roll` for the next stops.
-   - Waters and other atoms that are not in the active molecule: make the molecule that contains them active (`set_active_molecule`) before `goto` or
-     `density_at_atoms`.
-2. **Measure before you describe.** `density_at_atoms` (values in σ) works on the **active molecule** and only for the maps that are **visible**; to
-   sample a water or another molecule make it active, and to compare two maps make each visible in turn. For positions that belong to no loaded
-   atom, sample the map file directly at the coordinates (e.g. with gemmi) instead. For models with alternative conformers the
+   - **Sites that are not one side chain** (a reaction site, a ligand atom and its partner, a water and a residue): use `frame_atoms` with the
+     atoms in order. The first two atoms (e.g. S and C of a forming bond) are laid horizontally in the screen plane, so their gap is visible.
+     `goto_atom` centres on one atom, and `set_center atom=[...]` on the midpoint of several.
+   - **Overlaid models:** show only what the stop needs with `solo mol=…` or `set_molecule mol=… visible=false`, and give compared models
+     distinct carbon colours (`set_molecule color=…`). Molecules in other models are addressed as `2#A/85 SG` or with `mol=`.
+   - **Annotate** what you will talk about: `label_atoms` and `show_distance` (labels and distances are drawn into screenshots too).
+2. **Measure before you describe.** `density_at_atoms` (values in σ) takes `maps=[ids]` (independent of what is visible, so comparing maps does not
+   change the user's view), `mol=` and either a residue range or `atoms=[specs]`. Other measurements:
+   - `distance a b`: across molecules; without an altloc it lists every pair of conformers.
+   - `density_profile a b maps=[…]`: values along the line, with the lowest value between the ends relative to the end values. This is the test
+     for a bond forming (ratio near 1) versus a gap.
+   - `density_at_point`: at coordinates or an atom plus an offset.
+   - `peaks`: each peak has its whole-cell rank (`rank` of `of`), to judge a peak against the noise.
+   - `load_mtz d_min=…`: compares data sets at the same resolution. For models with alternative conformers the
    keys are `atom:altloc`; compare conformers: density lost at conformer A and gained at conformer B means a real motion, a change at both or
    at neither does not. Backbone near zero and a strong side-chain pair means a side-chain motion (rotamer change), not noise.
-3. **Take a screenshot and look at it**, but state only what the numbers support. A screenshot is a sanity check (is the density where I think it is,
+3. **Take a screenshot and look at it** (`screenshot` waits until the map contours for the view are ready; `width=800` keeps it small,
+   `crop=[x,y,w,h]` in view fractions), but state only what the numbers support. A screenshot is a sanity check (is the density where I think it is,
    is the view cluttered), never the evidence. Say "the sulfur sits on …" only if the sampled values say so; if you cannot identify an atom in the
    image, do not name it.
 4. **Report in a few lines:** a small table (atoms × maps/conformers, σ), what it means chemically, how the two data sets compare, and what is
    uncertain. State the sign convention of the map you show (for light-minus-dark maps: green = density gained in the light state, red = density lost).
-5. **Stop and ask** whether to continue. Offer the next stop by name. Do not run the whole tour unprompted.
+5. **Record the stop** with `tour_add name=… text=…` (one to three sentences: what to look at and the key number). At the end,
+   `tour_save path=…` writes a tour file that the user and co-reviewers can step through with ◀ ▶ without an agent (`tour_load`).
+6. **Stop and ask** whether to continue. Offer the next stop by name. Do not run the whole tour unprompted.
 
 ## Things to be careful about
 
@@ -62,5 +77,7 @@ with one clear statement. The user drives the pace.
   When comparing two pipelines, prefer half-map based measures (cross-half CC, signal against half-map noise); if you quote raw σ values, say that.
 - **Significance tiers** (A/B/C for waters, tier for residues) belong to the analysis that produced them; quote them with the criteria, do not re-derive.
 - **Say what you did not look at** (time points, chains, maps not loaded).
-- **Clutter:** the API cannot hide a molecule. If several models overlap, tell the user which to hide in the panel, or use a thin slab.
+- **Clutter:** hide overlapping models with `solo` / `set_molecule visible=false`, or use a thin slab.
+- **Map names:** name maps when loading (`load_mtz label=…`, or `rename_map`) so that four "2mFo-DFc" maps stay distinguishable in
+  results and screenshots. MTZ column labels cannot contain spaces.
 - Keep messages short; the user often reads them next to the 3D view. One stop = one message.

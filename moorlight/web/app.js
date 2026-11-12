@@ -120,7 +120,9 @@ function pushView() {
     const maps = {};
     for (const [id, m] of S.maps) maps[id] = { visible: m.info.visible, level_sigma: m.info.level_sigma };
     const sel = S.selection.filter((s) => s.mol === S.activeMol).map((s) => s.idx);
-    send({ type: "view", center: S.center.toArray().map((v) => +v.toFixed(2)), zoom: S.zoom, slab: S.slab,
+    const c = anim ? anim.to : S.center;   // while animating, report where the view is going
+    send({ type: "view", center: c.toArray().map((v) => +v.toFixed(2)), zoom: +S.zoom.toFixed(2), slab: +S.slab.toFixed(2),
+      orient: rot.quaternion.toArray().map((v) => +v.toFixed(5)),
       selection: sel, clicked: S.clicked ? atomLabel(S.clicked.mol, S.clicked.idx) : null,
       active_map: S.scrollMap, maps });
   }, 150);
@@ -141,15 +143,27 @@ function onServer(m) {
         const half = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * Math.min(1, camera.aspect);
         S.zoom = Math.min(400, Math.max(4, m.fit_radius / half));
         S.slab = Math.min(200, Math.max(1, m.slab || m.fit_radius));
-        redraw(); scheduleContour(true); pushView();
+      } else {              // restored view: zoom and slab as saved
+        if (m.zoom) S.zoom = m.zoom;
+        if (m.slab) S.slab = m.slab;
       }
+      redraw(); scheduleContour(true); pushView();
       break;
+    case "mol_display": applyDisplay(m.mol, m); break;
+    case "annotate": annotate(m); break;
+    case "tour": renderTour(m); break;
     case "log": addLog(m.text); break;
     case "rsr_start": startRSR(m); renderUndo(); break;
     case "rsr_coords": rsrCoords(m); break;
     case "rsr_status": rsrStatus(m); break;
     case "rsr_end": endRSR(); renderUndo(); break;
-    case "screenshot_request": needsRender = true; render1(); send({ type: "reply", id: m.id, data: renderer.domElement.toDataURL("image/png") }); break;
+    case "view_request":
+      send({ type: "reply", id: m.id, data: { center: (anim ? anim.to : S.center).toArray(), orient: rot.quaternion.toArray(),
+        zoom: S.zoom, slab: S.slab } });
+      break;
+    case "screenshot_request":
+      takeScreenshot(m).then((data) => send({ type: "reply", id: m.id, data }), (err) => send({ type: "reply", id: m.id, data: `error: ${err}` }));
+      break;
     case "remote_cmd": status(`Claude: ${m.cmd} ${JSON.stringify(m.args).slice(0, 120)}`); break;
     case "chat": chatAdd(m); break;
     case "chat_delta_start": chatStreamStart(); break;
@@ -162,8 +176,59 @@ function onServer(m) {
 }
 function render1() { updateCamera(); renderer.render(scene, camera); }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Screenshot after the view has settled: centre animation done and every visible map contoured for this centre/level.
+async function takeScreenshot(opt = {}) {
+  if (opt.wait !== false) {
+    for (let t = 0; anim && t < 100; t++) await sleep(20);
+    for (let t = 0; t < 600; t++) {
+      clearTimeout(contourTimer);
+      while (contourBusy) await sleep(30);
+      await contourAll();
+      const stale = [...S.maps.values()].some((m) => m.info.visible &&
+        !(m.lastCenter && m.lastCenter.distanceTo(S.center) < 0.5 && m.lastLevel === m.info.level_sigma));
+      if (!stale && !anim) break;
+      await sleep(50);
+    }
+  }
+  needsRender = false;
+  render1(); updateLabels();
+  const src = renderer.domElement;
+  const W = src.width, H = src.height, k = W / src.clientWidth;
+  const cv = document.createElement("canvas");
+  cv.width = W; cv.height = H;
+  const g = cv.getContext("2d");
+  g.drawImage(src, 0, 0);
+  if (opt.labels !== false) {   // the labels are HTML on top of the canvas: draw them in
+    g.font = `${12 * k}px ui-monospace, Menlo, monospace`;
+    g.textBaseline = "middle";
+    g.shadowColor = "#000"; g.shadowBlur = 3 * k;
+    const drawDiv = (div, color) => {
+      if (div.style.display === "none") return;
+      g.fillStyle = color;
+      g.fillText(div.textContent, parseFloat(div.style.left) * k + 6 * k, parseFloat(div.style.top) * k);
+    };
+    for (const div of S.labels.values()) drawDiv(div, "#ffffff");
+    for (const d of S.distances) drawDiv(d.div, "#99ffff");
+  }
+  let [cx, cy, cw, ch] = [0, 0, W, H];
+  if (Array.isArray(opt.crop) && opt.crop.length === 4) {
+    const [fx, fy, fw, fh] = opt.crop.map(Number);
+    cx = Math.round(fx * W); cy = Math.round(fy * H); cw = Math.round(fw * W); ch = Math.round(fh * H);
+  }
+  const outW = Math.round(opt.width || Math.min(cw, 1000)), outH = Math.round(ch * outW / cw);
+  const out = document.createElement("canvas");
+  out.width = outW; out.height = outH;
+  const go = out.getContext("2d");
+  go.imageSmoothingQuality = "high";
+  go.drawImage(cv, cx, cy, cw, ch, 0, 0, outW, outH);
+  return out.toDataURL("image/png");
+}
+
 // --------------------------------------------------------------- molecules
 function carbonColor(molId) {
+  const own = S.mols.get(molId)?.color;
+  if (own) return new THREE.Color(own).getHex();
   const ids = [...S.mols.keys()].sort((a, b) => a - b);
   const k = Math.max(0, ids.indexOf(molId));
   return CARBON_BY_MOL[k % CARBON_BY_MOL.length];
@@ -186,7 +251,7 @@ function setMolecule(data) {
   mol.xyz = Float32Array.from(data.xyz);
   mol.fixed = new Set(data.fixed);
   mol.residues = buildResidues(data);
-  mol.group.visible = data.visible;
+  setDisplayFields(mol, data.display ?? { visible: data.visible });
   rebuildMolGeometry(data.id);
   // drop labels pointing at atoms that no longer exist
   for (const [k, div] of S.labels) {
@@ -195,6 +260,22 @@ function setMolecule(data) {
   }
   renderMolList();
   redraw();
+}
+
+// display settings owned by the server (set_molecule), so `state` reports what the user sees
+function setDisplayFields(mol, d) {
+  mol.group.visible = d.visible !== false;
+  mol.color = d.color || null;
+  if (d.style) mol.style = d.style;
+  if (d.hydrogens != null) mol.hideH = !d.hydrogens;
+}
+function applyDisplay(id, d) {
+  const mol = S.mols.get(id);
+  if (!mol) return;
+  const before = `${mol.color}|${mol.style}|${mol.hideH}`;
+  setDisplayFields(mol, d);
+  if (`${mol.color}|${mol.style}|${mol.hideH}` !== before) rebuildMolGeometry(id);
+  renderMolList(); redraw();
 }
 
 function renderUndo() {
@@ -447,7 +528,13 @@ async function contourMap(id) {
   const c = S.center.clone();
   const level = m.info.level_sigma;
   const url = `/api/map/${id}/mesh?x=${c.x}&y=${c.y}&z=${c.z}&r=${m.info.radius}&level=${level}`;
-  const buf = await fetch(url).then((r) => r.arrayBuffer());
+  const resp = await fetch(url);
+  if (!resp.ok) {   // e.g. a column that is not in the MTZ: report once, do not retry for this view
+    status(`⚠ map ${id} (${m.info.name}): ${(await resp.text()).slice(0, 200)}`);
+    m.lastCenter = c; m.lastLevel = level;
+    return;
+  }
+  const buf = await resp.arrayBuffer();
   const hlen = new DataView(buf).getUint32(0, true);
   const header = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, hlen)));
   let off = 4 + hlen;
@@ -548,6 +635,16 @@ function toggleLabel(molId, idx) {
   }
   redraw();
 }
+function addLabel(molId, idx) {
+  if (!S.labels.has(`${molId}:${idx}`) && S.mols.get(molId)) toggleLabel(molId, idx);
+}
+function annotate(m) {
+  if (m.clear_labels) { for (const div of S.labels.values()) div.remove(); S.labels.clear(); }
+  if (m.clear_distances) { for (const d of S.distances) { d.div.remove(); overlay.remove(d.line); } S.distances = []; }
+  for (const l of m.labels || []) addLabel(l.mol, l.idx);
+  for (const d of m.distances || []) if (S.mols.get(d.a.mol) && S.mols.get(d.b.mol)) addDistance(d.a, d.b);
+  redraw();
+}
 function updateLabels() {
   const rect = renderer.domElement.getBoundingClientRect();
   const v = new THREE.Vector3();
@@ -567,7 +664,7 @@ function updateLabels() {
     if (!a || !b) continue;
     const pa = projectAtom(a, d.a.idx, new THREE.Vector3()), pb = projectAtom(b, d.b.idx, new THREE.Vector3());
     d.div.style.left = `${((pa.x + pb.x) / 2 + 1) / 2 * rect.width}px`;
-    d.div.style.top = `${(1 - (pa.y + pb.y) / 2) / 2 * rect.height}px`;
+    d.div.style.top = `${(1 - (pa.y + pb.y) / 2) / 2 * rect.height + 11}px`;   // just below the line, clear of atom labels
   }
 }
 function clearLabels() {
@@ -1035,10 +1132,10 @@ function renderMolList() {
       `<button title="Make active (edits apply here)">edit</button><button title="Close">×</button>`;
     const [cb, hcb] = div.querySelectorAll("input");
     const styleBtn = div.querySelector("button[title^='Toggle ball']");
-    styleBtn.onclick = () => { mol.style = mol.style === "lines" ? "sticks" : "lines"; rebuildMolGeometry(id); renderMolList(); redraw(); };
-    if (hcb) hcb.onchange = () => { mol.hideH = !hcb.checked; rebuildMolGeometry(id); redraw(); };
+    styleBtn.onclick = () => cmd("set_molecule", { mol: id, style: mol.style === "lines" ? "sticks" : "lines" });
+    if (hcb) hcb.onchange = () => cmd("set_molecule", { mol: id, hydrogens: hcb.checked });
     const act = div.querySelector("button[title^='Make active']"), close = div.querySelector("button[title='Close']");
-    cb.onchange = () => { mol.group.visible = cb.checked; redraw(); };
+    cb.onchange = () => { mol.group.visible = cb.checked; redraw(); cmd("set_molecule", { mol: id, visible: cb.checked }); };
     act.onclick = () => cmd("set_active_molecule", { mol: id });
     close.onclick = () => cmd("close_molecule", { mol: id });
     box.appendChild(div);
@@ -1084,6 +1181,22 @@ function renderMapList() {
   if (prev) sel.value = prev;
   else { const d = [...S.maps.values()].find((m) => m.info.kind === "diff" && m.info.visible); if (d) sel.value = d.info.id; }
 }
+
+// ------------------------------------------------------------------- tours
+function renderTour(t) {
+  const box = $("#tour");
+  if (!t.stops || !t.stops.length) { box.classList.add("hidden"); return; }
+  box.classList.remove("hidden");
+  const i = Math.max(0, t.index);
+  $("#tour-title").textContent = t.title || "Tour";
+  $("#tour-pos").textContent = `${t.index + 1}/${t.stops.length}`;
+  $("#tour-name").textContent = t.stops[i]?.name ?? "";
+  $("#tour-text").innerHTML = marked.parse(t.stops[i]?.text ?? "");
+  $("#tour-prev").disabled = t.index <= 0;
+  $("#tour-next").disabled = t.index >= t.stops.length - 1;
+}
+$("#tour-prev").onclick = () => cmd("tour_goto", { step: -1 });
+$("#tour-next").onclick = () => cmd("tour_goto", { step: 1 });
 
 function addLog(t) {
   const lg = $("#log");
@@ -1199,8 +1312,10 @@ async function init() {
   $("#chat-bash").checked = !!st.chat_settings?.allow_bash;
   if (st.rsr_settings) setRsrSettings(st.rsr_settings);
   if (st.rsr) startRSR({ mol: st.rsr.mol, idx: st.rsr.idx });
+  if (st.tour) renderTour(st.tour);
   renderMolList();
   connect();
+  setTimeout(pushView, 500);   // the server learns this tab's zoom, slab and rotation
   scheduleContour(true);
   render();
   new ResizeObserver(() => { resize(); redraw(); }).observe(vp);

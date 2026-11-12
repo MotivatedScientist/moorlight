@@ -63,6 +63,13 @@
         <div class="row"><button id="btn-lig-prev" title="Previous ligand">◀</button>
           <button id="btn-lig-next" title="Next ligand (skips PEG, glycerol, sulfate, buffers, Na/Cl, uncoordinated metals)">Next ligand ▶</button>
           <label title="also visit additives (PEG, EDO, SO4, ...)"><input type="checkbox" id="lig-all"> incl. additives</label></div>
+        <div id="tour" class="hidden">
+          <div class="row"><b id="tour-title">Tour</b><span style="flex:1"></span>
+            <button id="tour-prev" title="Previous stop">◀</button><span id="tour-pos" class="hint"></span>
+            <button id="tour-next" title="Next stop">▶</button></div>
+          <div id="tour-name"></div>
+          <div id="tour-text"></div>
+        </div>
         <h3>Molecules</h3>
         <div id="mol-list"></div>
         <h3>Maps <span class="hint">scroll wheel changes the ● map</span></h3>

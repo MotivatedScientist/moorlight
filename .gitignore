@@ -9,3 +9,4 @@ testdata/
 *.mtz
 *.ccp4
 *.map
+.DS_Store

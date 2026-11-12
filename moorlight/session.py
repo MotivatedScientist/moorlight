@@ -5,7 +5,9 @@ import asyncio
 import base64
 import glob
 import inspect
+import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -15,7 +17,7 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from . import edit
-from .maps import XMap, detect_columns, DEFAULT_VISIBLE
+from .maps import XMap, detect_columns, check_columns, guess_kind, DEFAULT_VISIBLE
 from .model import BondOrders, Molecule
 
 COMMANDS: dict[str, dict] = {}
@@ -33,6 +35,44 @@ RES = {"chain": ("string", "chain id"), "resseq": ("integer", "residue number")}
 RANGE = {"chain": ("string", "chain id"), "start": ("integer", "first residue number"),
          "end": ("integer", "last residue number (inclusive)")}
 MOL = {"mol": ("integer", "molecule id (default: active molecule)")}
+ATOM_SPEC = ("atom spec: 'A/85 CA', 'A/85 LYS CA:B' (altloc B), '2#A/85 SG' (molecule 2), 'A/85' (residue centroid), "
+             "or {chain, resseq, atom, altloc, mol}")
+MAPS = {"maps": ("array", "map ids (default: the visible maps)")}
+
+
+def parse_atom_spec(spec):
+    """'A/85 CA', 'A/85A LYS CA:B', '2#A/85/SG', 'A 85 CA' or a dict -> dict(mol, chain, resseq, icode, atom, altloc)."""
+    if isinstance(spec, dict):
+        d = dict(spec)
+        d.setdefault("resseq", d.pop("res", None))
+        return {"mol": d.get("mol"), "chain": str(d["chain"]), "resseq": int(d["resseq"]),
+                "icode": (d.get("icode") or "").strip(), "atom": d.get("atom") or d.get("name"),
+                "altloc": d.get("altloc") or None}
+    t = str(spec).strip()
+    mol = None
+    m = re.match(r"^(\d+)\s*#\s*(.*)$", t)
+    if m:
+        mol, t = int(m.group(1)), m.group(2)
+    if "/" in t:
+        chain, rest = t.split("/", 1)
+        toks = rest.replace("/", " ").split()
+    else:
+        toks = t.split()
+        chain, toks = (toks[0], toks[1:]) if toks else ("", [])
+    if not chain or not toks:
+        raise ValueError(f"cannot read atom spec {spec!r}; use e.g. 'A/85 CA', 'A/85 LYS CA:B' or '2#A/85 SG'")
+    m = re.match(r"^(-?\d+)([A-Za-z]?)$", toks[0])
+    if not m:
+        raise ValueError(f"bad residue number in atom spec {spec!r}")
+    atom, alt = None, None
+    rest = toks[1:]
+    if rest:
+        a = rest[-1]                       # [resname] atom[:altloc]
+        if ":" in a:
+            a, alt = a.split(":", 1)
+        atom = a
+    return {"mol": mol, "chain": chain.strip(), "resseq": int(m.group(1)), "icode": m.group(2),
+            "atom": atom, "altloc": alt or None}
 
 
 def _looks_like_difference_map(path, ccp4):
@@ -75,6 +115,10 @@ class Session:
         self.broadcast = lambda msg: None  # set by server
         self.pending: dict[str, asyncio.Future] = {}
         self.loop: asyncio.AbstractEventLoop | None = None
+        self.views: dict[str, dict] = self._read_json("views.json", {})
+        self.tour = {"title": "", "stops": []}
+        self.tour_index = -1
+        self.annotations = {"labels": [], "distances": []}   # atom specs set through the API (kept in views / tour stops)
 
     # ------------------------------------------------------------ plumbing
     def say(self, text):
@@ -108,6 +152,68 @@ class Session:
         self.push_model(m)
         self.say(msg)
         return msg
+
+    # ------------------------------------------------------- atoms and maps
+    def atoms(self, spec, mol=None, all_altlocs=True):
+        """Resolve an atom spec -> (Molecule, [atom indices]). A residue spec gives its heavy atoms. Without an altloc all
+        conformers match (all_altlocs) or only the first one (blank or lowest altloc)."""
+        d = parse_atom_spec(spec)
+        m = self.mol(d["mol"] if d["mol"] is not None else mol)
+        res = [i for i, k in enumerate(m.keys) if k[0] == d["chain"] and k[1] == d["resseq"] and k[2] == d["icode"]]
+        if d["atom"] and res and d["atom"] == m.info[res[0]][3] and not any(m.keys[i][3] == d["atom"] for i in res):
+            d["atom"] = None                  # 'A/85 LYS': a residue name, not an atom
+        idx = [i for i in res if (m.keys[i][3] == d["atom"] if d["atom"] else m.elements[i] != "H")
+               and (d["altloc"] is None or m.keys[i][4] in (d["altloc"], ""))]
+        if not idx:
+            raise ValueError(f"no atom matches {spec!r} in molecule {m.id} ({m.name})")
+        if d["altloc"] is None and not all_altlocs:
+            alts = sorted({m.keys[i][4] for i in idx} - {""})
+            idx = [i for i in idx if m.keys[i][4] in ("", alts[0] if alts else "")]
+        return m, idx
+
+    def point(self, spec, mol=None):
+        """Coordinates of an atom spec (first conformer) or residue centroid; a list of specs gives their centroid."""
+        if isinstance(spec, (list, tuple)) and spec and not isinstance(spec[0], (int, float)):
+            return np.mean([self.point(s, mol) for s in spec], axis=0)
+        if isinstance(spec, (list, tuple)):
+            return np.asarray(spec, float)
+        m, idx = self.atoms(spec, mol, all_altlocs=False)
+        return m.xyz[idx].mean(0)
+
+    def map_list(self, maps=None):
+        """Map ids (list, '3,4' or single) -> XMap list; default: visible maps (all maps if none is visible)."""
+        if maps is None or maps == []:
+            out = [x for x in self.maps.values() if x.visible]
+            return out or list(self.maps.values())
+        if isinstance(maps, (str, int)):
+            maps = str(maps).replace(",", " ").split()
+        out = []
+        for i in maps:
+            if int(i) not in self.maps:
+                raise ValueError(f"no map {i}; maps: {sorted(self.maps)}")
+            out.append(self.maps[int(i)])
+        return out
+
+    @staticmethod
+    def sigma(x, xyz):
+        return round(float((x.value_at(xyz) - x.mean) / x.rms), 2)
+
+    @staticmethod
+    def map_key(x):
+        return f"[{x.id}] {x.name}"
+
+    def _read_json(self, name, default):
+        try:
+            with open(os.path.join(self.workdir, ".moorlight", name)) as fh:
+                return json.load(fh)
+        except Exception:
+            return default
+
+    def _write_json(self, name, data):
+        d = os.path.join(self.workdir, ".moorlight")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, name), "w") as fh:
+            json.dump(data, fh, indent=1)
 
     def run(self, name, args):
         """Execute a command synchronously (called in a worker thread)."""
@@ -145,8 +251,17 @@ class Session:
 
     # ================================================================ state
     @command("Describe what the user currently sees: molecules, maps (visible, contour level), view centre "
-             "and nearest residue, selected atoms, refinement in progress, fixed atoms, recent log.", view_only=True)
-    def state(self):
+             "and nearest residue, selected atoms, refinement in progress, fixed atoms, recent log. compact=true gives one line "
+             "per molecule and map.", {"compact": ("boolean", "one line per molecule / map")}, view_only=True)
+    def state(self, compact=False):
+        if compact:
+            v = self.view
+            return {"molecules": [f"{m.id}: {m.name} {'visible' if m.visible else 'hidden'}{' ACTIVE' if m.id == self.active_mol else ''}"
+                                  f" {len(m.keys)} atoms" for m in self.molecules.values()],
+                    "maps": [f"{x.id}: {x.name} | {x.source} | {x.kind} | {'visible' if x.visible else 'hidden'} | "
+                             f"{x.level_sigma:g}σ{' | R' if x.id == self.refinement_map else ''}" for x in self.maps.values()],
+                    "view": {k: v.get(k) for k in ("center", "zoom", "slab")},
+                    "views": list(self.views), "tour": f"{self.tour_index + 1}/{len(self.tour['stops'])}" if self.tour["stops"] else None}
         out = {"workdir": self.workdir, "molecules": [], "maps": [], "view": {}}
         for m in self.molecules.values():
             chains = [(ch.name, len(ch)) for ch in m.st[0]]
@@ -176,6 +291,9 @@ class Session:
             out["refinement"] = {"running": True, "moving_atoms": len(self.rsr.moving_mol),
                                  "altloc": self.rsr.altloc, **self.rsr.geometry_stats()}
         out["log"] = self.log[-15:]
+        out["views"] = list(self.views)
+        if self.tour["stops"]:
+            out["tour"] = {"title": self.tour["title"], "stops": len(self.tour["stops"]), "current": self.tour_index}
         return out
 
     @staticmethod
@@ -183,13 +301,22 @@ class Session:
         k = m.info[i]
         return f"{k[0]}/{k[1]}{k[2]} {k[3]} {k[4]}{(':' + k[5]) if k[5] else ''}"
 
-    @command("Take a screenshot of the 3D view. Returns the path of a PNG file you can Read.", view_only=True)
-    def screenshot(self):
-        data = self.ask_client("screenshot_request", {})
+    @command("Take a screenshot of the 3D view, with atom labels and distances drawn in. Returns the path of a PNG file you can "
+             "Read. By default it waits until the view has stopped moving and the map contours for it are computed.",
+             {"width": ("integer", "output width in pixels (default: as on screen, at most 1000)"),
+              "crop": ("array", "[x, y, w, h] as fractions of the view, e.g. [0.2, 0.1, 0.6, 0.8]"),
+              "wait": ("boolean", "wait for pending map contours (default true)"),
+              "labels": ("boolean", "draw labels and distances (default true)"),
+              "path": ("string", "output PNG path (default .moorlight/screenshots/)")}, view_only=True)
+    def screenshot(self, width=None, crop=None, wait=True, labels=True, path=None):
+        data = self.ask_client("screenshot_request", {"width": width, "crop": crop, "wait": wait, "labels": labels},
+                               timeout=120 if wait else 15)
+        if not isinstance(data, str) or "," not in data:
+            raise RuntimeError(f"screenshot failed: {data}")
         png = base64.b64decode(data.split(",", 1)[1])
         d = os.path.join(self.workdir, ".moorlight", "screenshots")
         os.makedirs(d, exist_ok=True)
-        p = os.path.join(d, time.strftime("view_%Y%m%d_%H%M%S.png"))
+        p = self._path(path) if path else os.path.join(d, time.strftime("view_%Y%m%d_%H%M%S.png"))
         with open(p, "wb") as fh:
             fh.write(png)
         return p
@@ -233,21 +360,37 @@ class Session:
 
     @command("Load maps from an MTZ. TorchRef (FWT/PHWT, DELFWT/PHDELWT) and TorchRef difference-refinement "
              "(WDF, DF, DFc with PHIC_dark, mDFop-DFc/PHIC_diff, extrapolated maps) columns are detected "
-             "automatically. Optionally give explicit columns as 'F,PHI' strings.",
+             "automatically, as are phenix maps (2FOFCWT/FOFCWT, Fo-Fo FoFo/PHFc, polder/omit). Optionally give explicit columns as "
+             "'F,PHI', 'F,PHI,kind' or 'F,PHI,kind,name' strings (kind 'diff' or '2fofc'). label names the maps (one map: the "
+             "name; several: a prefix). d_min truncates the data, to compare data sets at matched resolution.",
              {"path": ("string", "MTZ path"),
-              "columns": ("array", "optional list of 'F,PHI' or 'F,PHI,diff' strings"),
+              "columns": ("array", "optional list of 'F,PHI[,kind[,name]]' strings"),
+              "label": ("string", "map name (or prefix if several maps are loaded), e.g. 'pH 7 2mFo-DFc'"),
+              "d_min": ("number", "resolution cut-off in Å (default: all data)"),
               "show_all": ("boolean", "make all detected maps visible")})
-    def load_mtz(self, path, columns=None, show_all=False):
+    def load_mtz(self, path, columns=None, show_all=False, label=None, d_min=None):
         p = self._path(path)
         mtz = gemmi.read_mtz_file(p)
         if columns:
             found = []
+            if isinstance(columns, str):
+                columns = [columns]
             for c in columns:
                 parts = [s.strip() for s in c.split(",")]
-                kind = parts[2] if len(parts) > 2 else ("diff" if "DEL" in parts[0].upper() else "2fofc")
-                found.append((parts[0], parts[1], kind, f"{parts[0]}/{parts[1]}"))
+                if len(parts) < 2:
+                    raise ValueError(f"columns entry {c!r}: expected 'F,PHI[,kind[,name]]'")
+                check_columns(mtz, parts[0], parts[1])
+                kind = parts[2] if len(parts) > 2 and parts[2] else guess_kind(parts[0])
+                if kind not in ("diff", "2fofc"):
+                    raise ValueError(f"kind must be 'diff' or '2fofc', not {kind!r}")
+                found.append((parts[0], parts[1], kind, parts[3] if len(parts) > 3 else f"{parts[0]}/{parts[1]}"))
         else:
             found = detect_columns(mtz)
+        if label:
+            found = [(f, phi, kind, label if len(found) == 1 else f"{label} {name}") for f, phi, kind, name in found]
+        if d_min:
+            d_min = float(d_min)
+            found = [(f, phi, kind, f"{name} (d_min {d_min:g} Å)") for f, phi, kind, name in found]
         if not found:
             raise ValueError(f"no map coefficient columns recognised in {p}: "
                              f"{[c.label for c in mtz.columns]}")
@@ -255,7 +398,8 @@ class Session:
         first_vis = not self.maps
         for f, phi, kind, label in found:
             vis = show_all or (first_vis and f in DEFAULT_VISIBLE)
-            x = XMap.from_mtz(mtz, f, phi, kind, label, os.path.basename(p), self.sample_rate, lazy=not vis)
+            x = XMap.from_mtz(mtz, f, phi, kind, label, os.path.basename(p), self.sample_rate, lazy=not vis, d_min=d_min)
+            x.path = p
             x.visible = vis
             self.maps[x.id] = x
             new.append(x)
@@ -269,13 +413,15 @@ class Session:
 
     @command("Load a CCP4/MRC map file.", {"path": ("string", "map path"),
                                             "difference": ("boolean", "contour at +/- level; omit to auto-detect "
-                                                                  "(file name or symmetric +/- density)")})
-    def load_map(self, path, difference=None):
+                                                                  "(file name or symmetric +/- density)"),
+                                            "label": ("string", "map name (default: file name)")})
+    def load_map(self, path, difference=None, label=None):
         p = self._path(path)
         ccp4 = gemmi.read_ccp4_map(p, setup=True)
         if difference is None:
             difference = _looks_like_difference_map(p, ccp4)
-        x = XMap(os.path.basename(p), ccp4.grid, "diff" if difference else "2fofc", os.path.basename(p))
+        x = XMap(label or os.path.basename(p), ccp4.grid, "diff" if difference else "2fofc", os.path.basename(p))
+        x.path = p
         x.visible = True
         self.maps[x.id] = x
         self.push_maps()
@@ -347,7 +493,7 @@ class Session:
                 mtz = gemmi.read_mtz_file(path)
                 for x in xs:
                     if x.f:
-                        new = XMap.from_mtz(mtz, x.f, x.phi, x.kind, x.name, src, self.sample_rate)
+                        new = XMap.from_mtz(mtz, x.f, x.phi, x.kind, x.name, src, self.sample_rate, d_min=x.d_min)
                         x.grid, x.mean, x.rms = new.grid, new.mean, new.rms
             self.push_maps()
             self.broadcast({"type": "maps_changed"})
@@ -399,12 +545,76 @@ class Session:
         self.broadcast({"type": "view_cmd", "center": c, "fit_radius": fit, "slab": slab, **({"orient": q} if q else {})})
         return {"center": [round(v, 3) for v in c], "fit_radius": round(fit, 2), "slab": round(slab, 2), "oriented": q is not None}
 
-    @command("Centre the view on coordinates.", {"x": ("number", ""), "y": ("number", ""), "z": ("number", "")},
-             view_only=True)
-    def set_center(self, x, y, z):
+    @command("Centre the view on coordinates, on an atom, or on the centroid of several atoms (e.g. the midpoint of S and C: "
+             "atom=['A/85 SG', 'B/501 C1']). Zoom, slab and rotation are kept.",
+             {"x": ("number", ""), "y": ("number", ""), "z": ("number", ""),
+              "atom": ("array", "atom spec or list of atom specs; " + ATOM_SPEC), **MOL}, view_only=True)
+    def set_center(self, x=None, y=None, z=None, atom=None, mol=None):
+        if atom is not None:
+            x, y, z = (float(v) for v in self.point(atom if isinstance(atom, list) else [atom], mol))
+        if x is None or y is None or z is None:
+            raise ValueError("give x, y, z or atom")
+        x, y, z = float(x), float(y), float(z)
         self.view["center"] = [x, y, z]
         self.broadcast({"type": "view_cmd", "center": [x, y, z]})
-        return [x, y, z]
+        return [round(x, 3), round(y, 3), round(z, 3)]
+
+    @command("Centre on one atom and zoom so `radius` Å around it fits the screen; the rotation is kept.",
+             {"atom": ("string", ATOM_SPEC), **MOL, "radius": ("number", "Å of context (default 6)"),
+              "slab": ("number", "depth half-thickness in Å (default 4)")}, view_only=True)
+    def goto_atom(self, atom, mol=None, radius=6.0, slab=4.0):
+        m, idx = self.atoms(atom, mol, all_altlocs=False)
+        c = m.xyz[idx[0]].tolist()
+        self.view["center"] = c
+        self.broadcast({"type": "view_cmd", "center": c, "fit_radius": float(radius), "slab": float(slab)})
+        return {"atom": self._atom_label(m, idx[0]), "center": [round(v, 3) for v in c]}
+
+    @command("Frame a set of atoms (e.g. a reaction site): centre on their centroid, zoom so all fit with `padding` Å to spare, and "
+             "rotate so the first two atoms lie in the screen plane on a horizontal line (first atom on the left) with the "
+             "plane of all atoms facing the viewer. The slab covers the atoms' depth plus `padding`/2.",
+             {"atoms": ("array", "list of atom specs (at least one); " + ATOM_SPEC), **MOL,
+              "padding": ("number", "Å of context around the atoms (default 4)"),
+              "slab": ("number", "depth half-thickness in Å (default: atoms' depth + 2 Å, at least 3)"),
+              "orient": ("boolean", "rotate the view (default true)"),
+              "roll": ("number", "extra roll about the viewing axis in degrees")}, view_only=True)
+    def frame_atoms(self, atoms, mol=None, padding=4.0, slab=None, orient=True, roll=0.0):
+        from scipy.spatial.transform import Rotation
+        if isinstance(atoms, str):
+            atoms = [atoms]
+        pts = np.array([self.point(a, mol) for a in atoms])
+        c = pts.mean(0)
+        extent = float(np.linalg.norm(pts - c, axis=1).max()) if len(pts) > 1 else 0.0
+        q = None
+        cur = self.view.get("orient")
+        view_z = Rotation.from_quat(cur).as_matrix()[2] if cur else np.array([0.0, 0.0, 1.0])
+        z = view_z
+        if orient and len(pts) >= 2 and np.linalg.norm(pts[1] - pts[0]) > 1e-3:
+            x = (pts[1] - pts[0]) / np.linalg.norm(pts[1] - pts[0])
+            z = None
+            if len(pts) >= 3:
+                _, sv, vt = np.linalg.svd(pts - c)
+                if sv[1] > 0.2:                       # not collinear: look at the plane of the atoms
+                    z = vt[2]
+            if z is None:                             # keep the current viewing direction as far as possible
+                z = view_z
+            z = z - x * (z @ x)
+            if np.linalg.norm(z) < 1e-3:
+                z = np.cross(x, [0.0, 1.0, 0.0] if abs(x[1]) < 0.9 else [1.0, 0.0, 0.0])
+            z = z / np.linalg.norm(z)
+            if z @ view_z < 0:
+                z = -z
+            y = np.cross(z, x)
+            r = Rotation.from_euler("z", float(roll or 0), degrees=True) * Rotation.from_matrix(np.array([x, y, z]))
+            q = [float(v) for v in r.as_quat()]
+        depth = float(np.abs((pts - c) @ z).max()) if len(pts) > 1 else 0.0
+        slab = float(slab) if slab else max(3.0, depth + 2.0)
+        fit = extent + float(padding)
+        self.view["center"] = c.tolist()
+        self.broadcast({"type": "view_cmd", "center": c.tolist(), "fit_radius": fit, "slab": slab, **({"orient": q} if q else {})})
+        out = {"center": [round(float(v), 3) for v in c], "fit_radius": round(fit, 2), "slab": round(slab, 2), "oriented": q is not None}
+        if len(pts) >= 2:
+            out["distance_first_pair"] = round(float(np.linalg.norm(pts[1] - pts[0])), 3)
+        return out
 
     @command("Change a map's display: visibility, contour level (sigma), radius (Å), colour; or make it "
              "the map used for real-space refinement.",
@@ -423,6 +633,14 @@ class Session:
             x.color = color
         if refinement_map:
             self.refinement_map = x.id
+        self.push_maps()
+        return x.info()
+
+    @command("Rename a map (the name shown in the panel, state and results).",
+             {"map_id": ("integer", ""), "name": ("string", "new name")}, view_only=True)
+    def rename_map(self, map_id, name):
+        x = self.maps[int(map_id)]
+        x.name = str(name)
         self.push_maps()
         return x.info()
 
@@ -456,30 +674,70 @@ class Session:
         self.broadcast({"type": "active_molecule", "mol": self.active_mol})
         return self.active_mol
 
+    def push_display(self, m):
+        self.broadcast({"type": "mol_display", "mol": m.id, **m.display()})
+
+    @command("Show or hide a molecule, set its carbon colour, drawing style or hydrogens. The panel checkboxes call this too, so "
+             "`state` always reports what the user sees.",
+             {"mol": ("integer", "molecule id"), "visible": ("boolean", ""), "color": ("string", "css colour for carbons, "
+              "e.g. '#ff80c0' or 'cyan'; 'default' resets"), "style": ("string", "'sticks' or 'lines'"),
+              "hydrogens": ("boolean", "show hydrogens")}, view_only=True)
+    def set_molecule(self, mol, visible=None, color=None, style=None, hydrogens=None):
+        m = self.mol(mol)
+        if visible is not None:
+            m.visible = bool(visible)
+        if color:
+            m.color = None if color == "default" else str(color)
+        if style:
+            if style not in ("sticks", "lines"):
+                raise ValueError("style must be 'sticks' or 'lines'")
+            m.style = style
+        if hydrogens is not None:
+            m.hydrogens = bool(hydrogens)
+        self.push_display(m)
+        return {"mol": m.id, **m.display()}
+
+    @command("Show only this molecule (hide all others).", {"mol": ("integer", "molecule id")}, view_only=True)
+    def solo(self, mol):
+        keep = self.mol(mol).id
+        for m in self.molecules.values():
+            m.visible = m.id == keep
+            self.push_display(m)
+        return {m.id: m.visible for m in self.molecules.values()}
+
     # ====================================================== map analysis
     @command("List strongest peaks (positive and negative) of a map, with the nearest atom of the active "
              "molecule. Useful for difference maps in time-resolved work.",
              {"map_id": ("integer", ""), "sigma": ("number", "threshold (default 3.5)"),
               "max_peaks": ("integer", "default 30"), "max_distance": ("number", "only peaks within this "
-                                                                                 "distance of the model (default 4 Å)")},
+                                                                                 "distance of the model (default 4 Å; 0 = anywhere)"),
+              **MOL},
              view_only=True)
-    def peaks(self, map_id, sigma=3.5, max_peaks=30, max_distance=4.0):
+    def peaks(self, map_id, sigma=3.5, max_peaks=30, max_distance=4.0, mol=None):
+        """Each peak carries its rank among all peaks of the same sign in the whole cell ('rank' of 'of'), so a peak can be
+        judged against the noise ("the 15th of 560 peaks above 3.5σ")."""
         from .maps import SymMapper
 
         x = self.maps[int(map_id)]
-        m = self.mol()
+        m = self.mol(mol)
         sym = SymMapper(m.st, m.xyz, mask=np.array([e != "H" for e in m.elements]))
-        out = []
+        out, totals = [], {}
         for neg in ([False, True] if x.kind == "diff" else [False]):
-            for xyz, h in x.peaks(sigma, negative=neg):
+            found = x.peaks(sigma, negative=neg)
+            totals["negative" if neg else "positive"] = len(found)
+            n_sign = 0
+            for rank, (xyz, h) in enumerate(found, 1):
                 pos, d, ai = sym.nearest(xyz)
-                if d > max_distance or any(np.linalg.norm(np.array(o["xyz"]) - pos) < 0.7 for o in out):
+                if (max_distance and d > max_distance) or any(np.linalg.norm(np.array(o["xyz"]) - pos) < 0.7 for o in out):
                     continue
                 out.append({"height_sigma": round(-h if neg else h, 2), "xyz": [round(float(v), 2) for v in pos],
-                            "nearest": self._atom_label(m, ai), "distance": round(d, 2)})
-                if len(out) >= 4 * max_peaks:
+                            "nearest": self._atom_label(m, ai), "distance": round(d, 2),
+                            "rank": rank, "of": len(found)})
+                n_sign += 1
+                if n_sign >= 2 * max_peaks:
                     break
         out.sort(key=lambda p: -abs(p["height_sigma"]))
+        self.say(f"peaks in [{x.id}] {x.name} above {sigma}σ, whole cell: " + ", ".join(f"{n} {k}" for k, n in totals.items()))
         return out[:max_peaks]
 
     @command("List ligands (non-polymer, non-water residues) with a guess whether each is relevant: common "
@@ -509,20 +767,294 @@ class Session:
         return {"cc": float(np.corrcoef(va, vb)[0, 1]), "n_points": int(len(g)),
                 "rms_a_sigma": float(va.std() / a.rms), "rms_b_sigma": float(vb.std() / b.rms)}
 
-    @command("Map value (in sigma) at each atom of a residue range, for every visible map.",
-             {**RANGE}, view_only=True)
-    def density_at_atoms(self, chain, start, end):
-        m = self.mol()
+    @command("Map value (in sigma of each map's whole-cell rms) at each atom of a residue range, for the given maps (default: "
+             "the visible maps). Visibility is not changed. Give `atoms` instead of a range to sample a list of atom specs.",
+             {"chain": RANGE["chain"], "start": RANGE["start"], "end": RANGE["end"], **MAPS, **MOL,
+              "atoms": ("array", "list of atom specs instead of a residue range; " + ATOM_SPEC)}, view_only=True)
+    def density_at_atoms(self, chain=None, start=None, end=None, maps=None, mol=None, atoms=None):
+        m = self.mol(mol)
+        if atoms:
+            pairs = []
+            for a in ([atoms] if isinstance(atoms, (str, dict)) else atoms):
+                mm, idx = self.atoms(a, mol)
+                pairs += [(mm, i) for i in idx]
+        else:
+            if chain is None or start is None:
+                raise ValueError("give chain, start (and end), or atoms")
+            end = start if end is None else end
+            pairs = [(m, i) for i, k in enumerate(m.keys) if k[0] == chain and int(start) <= k[1] <= int(end)]
+            if not pairs:
+                raise ValueError(f"no atoms in {chain}/{start}-{end} of molecule {m.id}")
         out = {}
-        for x in self.maps.values():
-            if not x.visible:
-                continue
-            vals = {}
-            for i, k in enumerate(m.keys):
-                if k[0] == chain and start <= k[1] <= end:
-                    vals[self._atom_label(m, i)] = round((x.value_at(m.xyz[i]) - x.mean) / x.rms, 2)
-            out[f"[{x.id}] {x.name}"] = vals
+        for x in self.map_list(maps):
+            out[self.map_key(x)] = {(self._atom_label(mm, i) if mm is m else f"{mm.id}#{self._atom_label(mm, i)}"):
+                                    self.sigma(x, mm.xyz[i]) for mm, i in pairs}
         return out
+
+    @command("Distance between two atoms, possibly in different molecules. Without altlocs, every pair of conformers is listed.",
+             {"a": ("string", ATOM_SPEC), "b": ("string", ATOM_SPEC), **MOL}, view_only=True)
+    def distance(self, a, b, mol=None):
+        ma, ia = self.atoms(a, mol)
+        mb, ib = self.atoms(b, mol)
+        lab = lambda mm, i: f"{mm.id}#{self._atom_label(mm, i)}"
+        pairs = [{"a": lab(ma, i), "b": lab(mb, j), "distance": round(float(np.linalg.norm(ma.xyz[i] - mb.xyz[j])), 3)}
+                 for i in ia for j in ib if not (ma is mb and i == j)]
+        if not pairs:
+            raise ValueError("no atom pairs")
+        if len(pairs) == 1:
+            return pairs[0]
+        return {"pairs": pairs, "min": min(p["distance"] for p in pairs), "max": max(p["distance"] for p in pairs)}
+
+    @command("Density profile along the line between two atoms (or points): map values in σ at n evenly spaced points, the "
+             "lowest value between the ends and its ratio to the mean of the two end values (≈1: continuous density, a bond; "
+             "≪1: a gap). Uses the first conformer unless an altloc is given.",
+             {"a": ("string", ATOM_SPEC), "b": ("string", ATOM_SPEC), **MAPS, **MOL,
+              "n": ("integer", "number of points including the ends (default 11)")}, view_only=True)
+    def density_profile(self, a, b, maps=None, mol=None, n=11):
+        pa, pb = self.point(a, mol), self.point(b, mol)
+        n = max(3, int(n))
+        ts = np.linspace(0, 1, n)
+        pts = pa[None] + ts[:, None] * (pb - pa)[None]
+        out = {"a": str(a), "b": str(b), "distance": round(float(np.linalg.norm(pb - pa)), 3),
+               "t": [round(float(t), 3) for t in ts], "maps": {}}
+        for x in self.map_list(maps):
+            v = [self.sigma(x, p) for p in pts]
+            inner = v[1:-1]
+            k = int(np.argmin(inner))
+            ends = (v[0] + v[-1]) / 2
+            out["maps"][self.map_key(x)] = {
+                "values": v, "min_between": inner[k], "min_at_t": round(float(ts[k + 1]), 3), "ends_mean": round(ends, 2),
+                "min_over_ends": round(inner[k] / ends, 2) if abs(ends) > 1e-6 else None}
+        return out
+
+    @command("Map values (σ) at a point: x, y, z, or an atom spec plus an optional offset [dx, dy, dz] in Å.",
+             {"x": ("number", ""), "y": ("number", ""), "z": ("number", ""), "atom": ("string", ATOM_SPEC),
+              "offset": ("array", "[dx, dy, dz] in Å added to the atom position"), **MAPS, **MOL}, view_only=True)
+    def density_at_point(self, x=None, y=None, z=None, atom=None, offset=None, maps=None, mol=None):
+        if atom is not None:
+            p = self.point(atom, mol)
+        elif None not in (x, y, z):
+            p = np.array([float(x), float(y), float(z)])
+        else:
+            raise ValueError("give x, y, z or atom")
+        if offset:
+            p = p + np.asarray([float(v) for v in offset])
+        return {"xyz": [round(float(v), 3) for v in p], "values": {self.map_key(xm): self.sigma(xm, p) for xm in self.map_list(maps)}}
+
+    # ================================================= views, tours, labels
+    def _fresh_view(self):
+        """Ask the browser for its current view (messages are ordered, so a preceding goto is already applied)."""
+        try:
+            v = self.ask_client("view_request", {}, timeout=3)
+            if isinstance(v, dict):
+                self.view.update({k: v[k] for k in ("center", "orient", "zoom", "slab") if k in v})
+        except Exception:
+            pass          # no browser connected: use the last reported view
+        return self.view
+
+    def _snapshot(self):
+        v = self._fresh_view()
+        return {
+            "center": v.get("center"), "orient": v.get("orient"), "zoom": v.get("zoom"), "slab": v.get("slab"),
+            "active_mol": {"id": self.active_mol, "name": self.molecules[self.active_mol].name} if self.active_mol in self.molecules else None,
+            "molecules": [{"id": m.id, "name": m.name, **m.display()} for m in self.molecules.values()],
+            "maps": [{"id": x.id, "name": x.name, "visible": x.visible, "level_sigma": x.level_sigma, "radius": x.radius,
+                      "color": x.color} for x in self.maps.values()],
+            "annotations": json.loads(json.dumps(self.annotations)),
+        }
+
+    @staticmethod
+    def _match(items, d, used=()):
+        """Object with the saved id if it still has the saved name, else the first unused one with that name (tours in a new
+        session)."""
+        x = items.get(d.get("id"))
+        if x is not None and x.name == d.get("name") and x.id not in used:
+            return x
+        return next((y for y in items.values() if y.name == d.get("name") and y.id not in used), None)
+
+    def _apply_snapshot(self, snap):
+        used = set()
+        for d in snap.get("molecules", []):
+            m = self._match(self.molecules, d, used)
+            if m:
+                used.add(m.id)
+                m.visible, m.color, m.style, m.hydrogens = d.get("visible", True), d.get("color"), d.get("style"), d.get("hydrogens")
+                self.push_display(m)
+        named = set()
+        for d in snap.get("maps", []):
+            x = self._match(self.maps, d, named)
+            if x:
+                named.add(x.id)
+                x.visible, x.level_sigma = d.get("visible", x.visible), d.get("level_sigma", x.level_sigma)
+                x.radius, x.color = d.get("radius", x.radius), d.get("color") or x.color
+        for x in self.maps.values():          # maps not in the snapshot are hidden
+            if x.id not in named:
+                x.visible = False
+        self.push_maps()
+        act = snap.get("active_mol")
+        if isinstance(act, dict) and self._match(self.molecules, act) is not None:
+            self.set_active_molecule(self._match(self.molecules, act).id)
+        ann = snap.get("annotations")
+        if ann is not None:
+            self.clear_annotations()
+            for a in ann.get("labels", []):
+                try:
+                    self.label_atoms([a])
+                except ValueError:
+                    pass
+            for a, b in ann.get("distances", []):
+                try:
+                    self.show_distance(a, b)
+                except ValueError:
+                    pass
+        msg = {"type": "view_cmd"}
+        for k in ("center", "orient", "zoom", "slab"):
+            if snap.get(k) is not None:
+                msg[k] = snap[k]
+        self.view.update({k: msg[k] for k in ("center", "orient", "zoom", "slab") if k in msg})
+        self.broadcast(msg)
+
+    @command("Save the current view under a name: centre, rotation, zoom, slab, visible molecules (and colours), visible maps "
+             "and their levels, labels/distances set through the API. Stored in <workdir>/.moorlight/views.json.",
+             {"name": ("string", "view name")}, view_only=True)
+    def save_view(self, name):
+        self.views[str(name)] = self._snapshot()
+        self._write_json("views.json", self.views)
+        return {"saved": name, "views": list(self.views)}
+
+    @command("Restore a saved view (see save_view). Maps and molecules are matched by name.",
+             {"name": ("string", "view name")}, view_only=True)
+    def restore_view(self, name):
+        if name not in self.views:
+            raise ValueError(f"no view {name!r}; saved views: {list(self.views)}")
+        self._apply_snapshot(self.views[name])
+        return {"restored": name}
+
+    @command("List saved views.", view_only=True)
+    def list_views(self):
+        return list(self.views)
+
+    def push_tour(self):
+        self.broadcast({"type": "tour", "title": self.tour["title"], "index": self.tour_index,
+                        "stops": [{"name": st.get("name", ""), "text": st.get("text", "")} for st in self.tour["stops"]]})
+
+    @command("Add the current view as a stop of the tour, with a short text shown to the user next to the view. A tour can be "
+             "saved (tour_save) and stepped through in the viewer with ◀ ▶ without an agent.",
+             {"text": ("string", "what to look at, one to three sentences"), "name": ("string", "short stop name"),
+              "index": ("integer", "insert at this position (default: append)"),
+              "replace": ("boolean", "replace the stop at `index` instead of inserting"),
+              "title": ("string", "tour title (optional)")}, view_only=True)
+    def tour_add(self, text="", name=None, index=None, replace=False, title=None):
+        stop = {"name": name or f"stop {len(self.tour['stops']) + 1}", "text": text, "view": self._snapshot()}
+        stops = self.tour["stops"]
+        if title:
+            self.tour["title"] = title
+        if index is None:
+            stops.append(stop)
+            self.tour_index = len(stops) - 1
+        else:
+            index = int(index)
+            if replace:
+                stops[index] = stop
+            else:
+                stops.insert(index, stop)
+            self.tour_index = index
+        self.push_tour()
+        return {"stops": len(stops), "index": self.tour_index}
+
+    @command("Go to a tour stop: index (0-based) or step (+1 next, -1 previous).",
+             {"index": ("integer", "stop index"), "step": ("integer", "+1 / -1")}, view_only=True)
+    def tour_goto(self, index=None, step=None):
+        stops = self.tour["stops"]
+        if not stops:
+            raise ValueError("no tour loaded")
+        i = int(index) if index is not None else self.tour_index + int(step or 1)
+        i = max(0, min(len(stops) - 1, i))
+        self.tour_index = i
+        self._apply_snapshot(stops[i]["view"])
+        self.push_tour()
+        return {"index": i, "of": len(stops), "name": stops[i].get("name"), "text": stops[i].get("text")}
+
+    @command("Save the tour as JSON (stops with views and texts, plus the files needed to show them).",
+             {"path": ("string", "output .json path"), "title": ("string", "tour title")}, view_only=True)
+    def tour_save(self, path, title=None):
+        if title:
+            self.tour["title"] = title
+        files = {"models": [{"path": m.path, "name": m.name} for m in self.molecules.values() if m.path],
+                 "maps": [{"path": getattr(x, "path", None), "name": x.name, "f": x.f, "phi": x.phi, "kind": x.kind,
+                           "d_min": x.d_min} for x in self.maps.values() if getattr(x, "path", None)]}
+        p = self._path(path)
+        with open(p, "w") as fh:
+            json.dump({**self.tour, "files": files}, fh, indent=1)
+        return p
+
+    @command("Load a tour JSON and go to its first stop. Missing models and maps listed in the file are loaded first.",
+             {"path": ("string", "tour .json"), "load_files": ("boolean", "load missing models/maps (default true)")},
+             view_only=True)
+    def tour_load(self, path, load_files=True):
+        with open(self._path(path)) as fh:
+            t = json.load(fh)
+        if load_files:
+            names = {m.name for m in self.molecules.values()}
+            for f in t.get("files", {}).get("models", []):
+                if f["name"] not in names and f.get("path") and os.path.exists(f["path"]):
+                    self.load_model(f["path"])
+            mnames = {x.name for x in self.maps.values()}
+            for f in t.get("files", {}).get("maps", []):
+                if f["name"] in mnames or not f.get("path") or not os.path.exists(f["path"]):
+                    continue
+                if f.get("f"):
+                    self.load_mtz(f["path"], columns=[f"{f['f']},{f['phi']},{f['kind']},{f['name']}"], d_min=f.get("d_min"))
+                    if f.get("d_min"):   # load_mtz appended the d_min to the name; keep the saved one
+                        list(self.maps.values())[-1].name = f["name"]
+                else:
+                    self.load_map(f["path"], difference=f.get("kind") == "diff", label=f["name"])
+        self.tour = {"title": t.get("title", ""), "stops": t.get("stops", [])}
+        self.tour_index = -1
+        if self.tour["stops"]:
+            return self.tour_goto(0)
+        self.push_tour()
+        return {"stops": 0}
+
+    @command("Remove all tour stops.", view_only=True)
+    def tour_clear(self):
+        self.tour = {"title": "", "stops": []}
+        self.tour_index = -1
+        self.push_tour()
+        return "ok"
+
+    def _ref(self, spec, mol=None):
+        m, idx = self.atoms(spec, mol, all_altlocs=False)
+        if len({m.keys[i][3] for i in idx}) > 1:
+            raise ValueError(f"{spec!r} names a residue; give an atom")
+        return m, idx[0]
+
+    @command("Label atoms in the 3D view (labels also appear in screenshots).",
+             {"atoms": ("array", "list of atom specs; " + ATOM_SPEC), **MOL,
+              "clear": ("boolean", "remove existing labels first")}, view_only=True)
+    def label_atoms(self, atoms, mol=None, clear=False):
+        if isinstance(atoms, (str, dict)):
+            atoms = [atoms]
+        refs = [self._ref(a, mol) for a in atoms]
+        if clear:
+            self.annotations["labels"] = []
+        self.annotations["labels"] += [f"{m.id}#{self._atom_label(m, i)}" for m, i in refs]
+        self.broadcast({"type": "annotate", "clear_labels": bool(clear), "labels": [{"mol": m.id, "idx": i} for m, i in refs]})
+        return [self._atom_label(m, i) for m, i in refs]
+
+    @command("Draw a dashed distance line with its value between two atoms (also in screenshots).",
+             {"a": ("string", ATOM_SPEC), "b": ("string", ATOM_SPEC), **MOL}, view_only=True)
+    def show_distance(self, a, b, mol=None):
+        (ma, ia), (mb, ib) = self._ref(a, mol), self._ref(b, mol)
+        self.annotations["distances"].append([f"{ma.id}#{self._atom_label(ma, ia)}", f"{mb.id}#{self._atom_label(mb, ib)}"])
+        self.broadcast({"type": "annotate", "distances": [{"a": {"mol": ma.id, "idx": ia}, "b": {"mol": mb.id, "idx": ib}}]})
+        return round(float(np.linalg.norm(ma.xyz[ia] - mb.xyz[ib])), 3)
+
+    @command("Remove all labels and distance lines.", view_only=True)
+    def clear_annotations(self):
+        self.annotations = {"labels": [], "distances": []}
+        self.broadcast({"type": "annotate", "clear_labels": True, "clear_distances": True})
+        return "ok"
 
     # ========================================================= refinement
     def _start_rsr(self, m, idx, altloc=None, weight=None):

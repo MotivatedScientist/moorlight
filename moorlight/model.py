@@ -212,7 +212,7 @@ class Molecule:
 
     def residue_extent(self, chain, num, icode="", sidechain=True):
         """(centre, extent) for framing a residue: centroid of the side-chain heavy atoms (everything but N, CA, C, O, OXT; for
-        chromophore-modified residues etc. that includes the whole ligand part) and the largest distance of those atoms from it. Falls back to all
+        chromophore-modified residues that includes the whole ligand part) and the largest distance of those atoms from it. Falls back to all
         heavy atoms for waters, ions and residues without a side chain; sidechain=False uses all heavy atoms."""
         _, _, res = self.find_residue(chain, num, icode)
         heavy = [a for a in res if a.element.name != "H"] or [res[0]]

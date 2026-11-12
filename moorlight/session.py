@@ -534,7 +534,7 @@ class Session:
             return c
         c, extent = m.residue_extent(chain, int(resseq), icode)
         user_slab = float(slab) if slab else None
-        fit = min(extent + float(radius), max(9.0, float(radius)))   # large residues (chromophore-modified residues): do not zoom out beyond ~9 Å
+        fit = min(extent + float(radius), max(9.0, float(radius)))   # large modified residues: do not zoom out beyond ~9 Å
         slab = user_slab or 2.8
         if extent < 0.1:   # single atom (water, ion): include its hydrogen-bond / coordination partners
             reach = m.polar_reach(c, 3.4, exclude_key=(chain, int(resseq), (icode or "").strip())) or 2.8

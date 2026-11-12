@@ -590,7 +590,7 @@ SO4 PO4 PI 2HP NO3 SCN AZI IOD BR CL NA K CS LI RB NH4 F
 UNX UNL BME DTT DTU TCE IMD HEZ BCN SGM CO2 OXY PER
 BOG LMT LDA C8E HTG DMU UMQ BNG LMU SDS CPS
 OLC PLM DAO HEX HP6 OCT D10 D12 TRD C14 MYS R16 ACE
-""".split())  # last line: lipids / alkanes / acetyl fragments modelled in the membrane-protein structures
+""".split())  # last line: lipids / alkanes / acetyl fragments common in membrane-protein structures
 
 METALS = {"MG", "CA", "ZN", "MN", "FE", "FE2", "CO", "NI", "CU", "CU1", "CD", "HG", "MO", "W", "SR", "BA", "YB", "GD"}
 

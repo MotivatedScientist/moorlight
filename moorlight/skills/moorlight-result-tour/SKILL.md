@@ -13,8 +13,8 @@ with one clear statement. The user drives the pace.
 0. **Find the tools.** With the `mcp__moorlight__*` tools, use them. Without them (an MCP server cannot be added to a running session),
    use the same commands through Bash: `moorlight cmd --list` lists them, `moorlight cmd goto chain=A resseq=85` runs one and prints JSON
    (values are JSON when possible: `maps=[3,4]`, `atoms='["A/85 SG","B/501 C1"]'`). Below, "call X" means either.
-1. **Check the viewer is live.** Call `state`. If `screenshot` times out, no browser tab is connected: ask the user to open the viewer URL
-   (from `~/.moorlight/server.json`) and do not continue silently.
+1. **Check the viewer is live.** Call `state`. If `screenshot` times out, no browser tab is connected: open the viewer URL (from
+   `~/.moorlight/server.json`, or the `Moorlight ready:` line) in this session's built-in browser pane and try again; do not continue silently.
 2. **After any restart of the viewer, re-establish the state.** A browser tab can keep showing the previous view and ignore the first commands
    (a view that looks wrong right after a restart may be stale: in one session an orientation looked wrong right after a restart and was fine in a fresh
    state, but the cause was never confirmed). Re-send `set_map`, `set_active_molecule` and `goto`, wait a moment, take a

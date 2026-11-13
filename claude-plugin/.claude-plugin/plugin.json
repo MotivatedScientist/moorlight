@@ -1,0 +1,9 @@
+{
+  "name": "moorlight",
+  "version": "0.2.1",
+  "description": "Open and drive Moorlight (Coot 0.9-style model building in the browser, TorchRef real-space refinement) inside the Claude Code session's built-in browser, and give guided result tours of models and maps.",
+  "author": { "name": "Tobias Weinert" },
+  "homepage": "https://github.com/MotivatedScientist/moorlight",
+  "license": "MIT",
+  "keywords": ["crystallography", "model building", "coot", "torchref", "difference maps", "time-resolved"]
+}

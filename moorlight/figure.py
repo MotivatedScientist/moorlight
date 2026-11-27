@@ -103,8 +103,11 @@ def write_files(out_dir, name, result, spec):
     texts = []
     for lb in result.get("labels", []):
         cls = "distance" if lb.get("kind") == "distance" else "label"
-        anchor = "middle" if cls == "distance" else "start"
-        texts.append(f'    <text class="{cls}" x="{lb["x"]:.1f}" y="{lb["y"]:.1f}" text-anchor="{anchor}">'
+        if lb.get("leader"):
+            x1, y1, x2, y2 = lb["leader"]
+            texts.append(f'    <line class="leader" x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" '
+                         f'stroke="{color}" stroke-width="{max(1.0, fs / 14):.1f}"/>')
+        texts.append(f'    <text class="{cls}" x="{lb["x"]:.1f}" y="{lb["y"]:.1f}" text-anchor="start">'
                      f'{html.escape(lb["text"])}</text>')
     svg = (f'<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" '
            f'width="{mm_w:.2f}mm" height="{mm_h:.2f}mm" viewBox="0 0 {W} {H}">\n'
@@ -142,6 +145,13 @@ def legend(spec, maps_info, models_info):
     if spec.get("carve"):
         lines.append(f"Density is shown within {spec['carve']:g} Å of the displayed atoms"
                      + (" (an uncarved version is provided)." if spec.get("uncarved") else "."))
+    dashed = []
+    if spec.get("coordination"):
+        dashed.append("metal coordination (grey)")
+    if spec.get("hbonds"):
+        dashed.append("hydrogen bonds (blue)")
+    if dashed:
+        lines.append("Dashed lines: " + ", ".join(dashed) + ".")
     if spec.get("distances"):
         lines.append("Distances in Å.")
     return "\n\n".join(lines) + "\n"

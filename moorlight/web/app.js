@@ -221,7 +221,7 @@ async function takeScreenshot(opt = {}) {
     g.textBaseline = "middle";
     g.shadowColor = "#000"; g.shadowBlur = 3 * k;
     const drawDiv = (div, color) => {
-      if (div.style.display === "none") return;
+      if (div.style.display === "none" || div.style.visibility === "hidden") return;
       g.fillStyle = color;
       g.fillText(div.textContent, parseFloat(div.style.left) * k + 6 * k, parseFloat(div.style.top) * k);
     };
@@ -366,17 +366,28 @@ function makeLines(pos, col, width) {
 function rebuildMolGeometry(id) {
   const mol = S.mols.get(id);
   const d = mol.data;
-  for (const ch of [...mol.group.children]) { mol.group.remove(ch); ch.geometry.dispose(); }
+  for (const ch of [...mol.group.children]) { mol.group.remove(ch); ch.traverse((o) => o.geometry?.dispose()); }
   const isH = (i) => d.element[i] === "H";
   const out = (i) => mol.zone && !mol.zone.has(i);     // outside the shown zone (show_zone)
+  // cartoon: the main chain as a tube through CA, side chains from CA as sticks
+  const cartoon = mol.style === "cartoon" ? cartoonResidues(mol) : null;
+  const hiddenBB = (i) => cartoon && cartoon.bb.has(i);
+  const isMetal = (i) => METALS.has((d.element[i] || "").toUpperCase());
   const keep = [];  // bond indices to draw
+  const coord = []; // metal-ligand bonds: drawn dashed
   for (let k = 0; k < d.bonds.length / 2; k++) {
-    if (mol.hideH && (isH(d.bonds[2*k]) || isH(d.bonds[2*k+1]))) continue;
-    if (out(d.bonds[2*k]) || out(d.bonds[2*k+1])) continue;
+    const i = d.bonds[2*k], j = d.bonds[2*k+1];
+    if (mol.hideH && (isH(i) || isH(j))) continue;
+    if (out(i) || out(j)) continue;
+    if (isMetal(i) !== isMetal(j)) { coord.push(i, j); continue; }
+    if (hiddenBB(i) || hiddenBB(j)) continue;
     keep.push(k);
   }
   const bonded = new Uint8Array(d.atoms.length);
-  for (const i of d.bonds) bonded[i] = 1;
+  for (let k = 0; k < d.bonds.length / 2; k++) {
+    const i = d.bonds[2*k], j = d.bonds[2*k+1];
+    if (isMetal(i) === isMetal(j)) { bonded[i] = 1; bonded[j] = 1; }
+  }
   const lone = [];
   for (let i = 0; i < d.atoms.length; i++) if (!bonded[i] && !(mol.hideH && isH(i)) && !out(i)) lone.push(i);
   if (mol.style === "lines") {
@@ -387,8 +398,18 @@ function rebuildMolGeometry(id) {
     const isWater = (i) => ["HOH", "WAT", "DOD"].includes(d.atoms[i][3]);
     const cr = crossGeometry(mol.xyz, lone, d.element, id, (i) => (isWater(i) ? 0.3 : 0.55));
     if (cr.pos.length) mol.group.add(makeLines(cr.pos, cr.col, 2));
+    if (coord.length) {
+      const pos = [], col = [];
+      for (let n = 0; n < coord.length; n += 2) for (const [a, b] of dashes(P3(mol, coord[n]), P3(mol, coord[n+1]))) {
+        pos.push(a.x, a.y, a.z, b.x, b.y, b.z); col.push(0.6, 0.6, 0.6, 0.6, 0.6, 0.6);
+      }
+      mol.group.add(makeLines(pos, col, 2));
+    }
   } else {
-    for (const o of stickMeshes(mol, id, keep, lone)) mol.group.add(o);
+    for (const o of stickMeshes(mol, id, keep, lone, cartoon)) mol.group.add(o);
+    if (coord.length) mol.group.add(dashedSticks(coord.map((i) => P3(mol, i)), COORD_COLOR, 0.055));
+    mol.hasCoord = coord.length > 0;
+    if (cartoon) mol.group.add(cartoonTube(mol, id, cartoon));
   }
   // fixed atoms: magenta crosses
   if (mol.fixed.size) {
@@ -402,6 +423,81 @@ function rebuildMolGeometry(id) {
   }
 }
 
+// ------------------------------------------------- cartoon, dashed bonds
+const METALS = new Set(["LI", "NA", "K", "RB", "CS", "MG", "CA", "SR", "BA", "MN", "FE", "CO", "NI", "CU", "ZN", "CD", "HG",
+  "PT", "PD", "AG", "AU", "MO", "W", "V", "CR", "AL", "GA"]);
+const COORD_COLOR = 0x9a9a9a;
+const BACKBONE = new Set(["N", "C", "O", "OXT", "H", "HA", "H1", "H2", "H3", "HA2", "HA3"]);
+const P3 = (mol, i) => new THREE.Vector3(mol.xyz[3*i], mol.xyz[3*i+1], mol.xyz[3*i+2]);
+// [start, end] pairs of the dashes between a and b
+function dashes(a, b, dash = 0.2, gap = 0.14) {
+  const len = a.distanceTo(b), dir = b.clone().sub(a).normalize(), out = [];
+  for (let t = 0.05; t < len - 0.05; t += dash + gap) {
+    const e = Math.min(t + dash, len - 0.05);
+    out.push([a.clone().addScaledVector(dir, t), a.clone().addScaledVector(dir, e)]);
+  }
+  return out;
+}
+// dashed sticks for pairs of points [a0, b0, a1, b1, ...]
+function dashedSticks(pts, color, r, dash, gap) {
+  const segs = [];
+  for (let n = 0; n < pts.length; n += 2) segs.push(...dashes(pts[n], pts[n+1], dash, gap));
+  const im = new THREE.InstancedMesh(cylGeo, solidMat, Math.max(1, segs.length));
+  im.count = segs.length;
+  segs.forEach(([p, q], n) => {
+    _v.subVectors(q, p);
+    const len = _v.length();
+    _q.setFromUnitVectors(_up, _v.normalize());
+    _m.compose(p.clone().add(q).multiplyScalar(0.5), _q, _s.set(r, len, r));
+    im.setMatrixAt(n, _m);
+    im.setColorAt(n, _c.setHex(color));
+  });
+  im.frustumCulled = false;
+  return im;
+}
+// protein residues drawn as cartoon: their main-chain atoms are hidden (side chains start at CA). Within a zone the
+// tube runs three residues past the zone on both sides so it reads as a chain.
+function cartoonResidues(mol) {
+  const d = mol.data, bb = new Set(), tube = [];
+  const prot = mol.residues.filter((r) => r.atoms.some((i) => d.atoms[i][4] === "N") && r.atoms.some((i) => d.atoms[i][4] === "C")
+    && d.atoms[r.ca][4] === "CA");
+  const inZone = (r) => !mol.zone || r.atoms.some((i) => mol.zone.has(i));
+  const shown = new Set();
+  prot.forEach((r, k) => { if (inZone(r)) for (let j = Math.max(0, k - 3); j <= Math.min(prot.length - 1, k + 3); j++) shown.add(j); });
+  prot.forEach((r, k) => {
+    for (const i of r.atoms) if (BACKBONE.has(d.atoms[i][4])) bb.add(i);
+    if (shown.has(k)) tube.push(r);
+  });
+  return { bb, tube, ca: new Set(prot.map((r) => r.ca)) };
+}
+function cartoonTube(mol, id, cartoon) {
+  const grp = new THREE.Group();
+  let seg = [], last = null;
+  const flush = () => {
+    if (seg.length >= 2) {
+      const curve = new THREE.CatmullRomCurve3(seg, false, "centripetal");
+      const g = new THREE.TubeGeometry(curve, Math.max(8, seg.length * 8), 0.24, 14, false);
+      grp.add(new THREE.Mesh(g, cartoonMat(id)));
+    }
+    seg = [];
+  };
+  for (const r of cartoon.tube) {
+    const p = P3(mol, r.ca);
+    if (last && (last.r.chain !== r.chain || last.p.distanceTo(p) > 4.3)) flush();
+    seg.push(p);
+    last = { r, p };
+  }
+  flush();
+  return grp;
+}
+const cartoonMats = new Map();
+function cartoonMat(id) {
+  const c = carbonColor(id);
+  if (!cartoonMats.has(c)) cartoonMats.set(c, new THREE.MeshPhongMaterial({ color: new THREE.Color(c).lerp(new THREE.Color(0xffffff), 0.25),
+    shininess: 30, specular: 0x222222, side: THREE.DoubleSide }));
+  return cartoonMats.get(c);
+}
+
 // ---------------------------------------------------------- ball & stick
 const STICK_R = 0.13, BALL_R = 0.24, H_STICK_R = 0.07, H_BALL_R = 0.12, WATER_R = 0.28, ION_R = 0.6;
 const sphereGeo = new THREE.SphereGeometry(1, 12, 8);
@@ -410,7 +506,7 @@ const solidMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
 const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _v = new THREE.Vector3(), _s = new THREE.Vector3();
 const _up = new THREE.Vector3(0, 1, 0), _c = new THREE.Color();
 
-function stickMeshes(mol, id, keep, lone) {
+function stickMeshes(mol, id, keep, lone, cartoon = null) {
   const d = mol.data, x = mol.xyz;
   const P = (i) => new THREE.Vector3(x[3*i], x[3*i+1], x[3*i+2]);
   const isH = (i) => d.element[i] === "H";
@@ -471,7 +567,11 @@ function stickMeshes(mol, id, keep, lone) {
   }
   const loneSet = new Set(lone);
   const allBalls = [];
-  for (let i = 0; i < d.atoms.length; i++) if (!(mol.hideH && isH(i)) && !(mol.zone && !mol.zone.has(i))) allBalls.push(i);
+  for (let i = 0; i < d.atoms.length; i++) {
+    if ((mol.hideH && isH(i)) || (mol.zone && !mol.zone.has(i))) continue;
+    if (cartoon && (cartoon.bb.has(i) || cartoon.ca.has(i))) continue;   // the tube carries the main chain
+    allBalls.push(i);
+  }
   if (allBalls.length) {
     const im = new THREE.InstancedMesh(sphereGeo, solidMat, allBalls.length);
     allBalls.forEach((i, n) => {
@@ -668,7 +768,7 @@ function annotate(m) {
   if (m.clear_labels) { for (const div of S.labels.values()) div.remove(); S.labels.clear(); }
   if (m.clear_distances) { for (const d of S.distances) { d.div.remove(); overlay.remove(d.line); } S.distances = []; }
   for (const l of m.labels || []) addLabel(l.mol, l.idx);
-  for (const d of m.distances || []) if (S.mols.get(d.a.mol) && S.mols.get(d.b.mol)) addDistance(d.a, d.b);
+  for (const d of m.distances || []) if (S.mols.get(d.a.mol) && S.mols.get(d.b.mol)) addDistance(d.a, d.b, d.style, d.label);
   redraw();
 }
 function updateLabels() {
@@ -700,18 +800,20 @@ function clearLabels() {
   S.distances = [];
   redraw();
 }
-function addDistance(a, b) {
+function addDistance(a, b, style = "distance", showLabel = true) {
   const A = S.mols.get(a.mol).xyz, B = S.mols.get(b.mol).xyz;
   const pa = new THREE.Vector3(A[3*a.idx], A[3*a.idx+1], A[3*a.idx+2]);
   const pb = new THREE.Vector3(B[3*b.idx], B[3*b.idx+1], B[3*b.idx+2]);
   const g = new THREE.BufferGeometry().setFromPoints([pa, pb]);
-  const line = new THREE.LineSegments(g, new THREE.LineDashedMaterial({ color: 0x99ffff, dashSize: 0.2, gapSize: 0.15 }));
+  const hb = style === "hbond";
+  const line = new THREE.LineSegments(g, new THREE.LineDashedMaterial({ color: hb ? 0x6fa8ff : 0x99ffff, dashSize: hb ? 0.12 : 0.2, gapSize: hb ? 0.12 : 0.15 }));
   line.computeLineDistances();
   overlay.add(line);
   const div = document.createElement("div");
   div.className = "label dist"; div.textContent = `${pa.distanceTo(pb).toFixed(2)} Å`;
   $("#labels").appendChild(div);
-  S.distances.push({ a, b, line, div });
+  if (!showLabel) div.style.visibility = "hidden";
+  S.distances.push({ a, b, line, div, style, label: showLabel });
   status(`${atomLabel(a.mol, a.idx)} – ${atomLabel(b.mol, b.idx)}: ${pa.distanceTo(pb).toFixed(3)} Å`);
   redraw();
 }
@@ -1164,11 +1266,11 @@ function renderMolList() {
       `<span class="swatch" style="background:${sw}"></span><span class="name" title="${d.path ?? ""}">${id}: ${d.name}</span>` +
       `<span class="abs">${d.atoms.length} at</span>` +
       (d.element.includes("H") ? `<label title="show hydrogens"><input type="checkbox" ${mol.hideH ? "" : "checked"}>H</label>` : "") +
-      `<button title="Toggle ball-and-stick / lines">${mol.style === "lines" ? "lines" : "sticks"}</button>` +
+      `<button title="Style: sticks → cartoon (main chain as a tube, side chains as sticks) → lines">${mol.style || "sticks"}</button>` +
       `<button title="Make active (edits apply here)">edit</button><button title="Close">×</button>`;
     const [cb, hcb] = div.querySelectorAll("input");
-    const styleBtn = div.querySelector("button[title^='Toggle ball']");
-    styleBtn.onclick = () => cmd("set_molecule", { mol: id, style: mol.style === "lines" ? "sticks" : "lines" });
+    const styleBtn = div.querySelector("button[title^='Style:']");
+    styleBtn.onclick = () => cmd("set_molecule", { mol: id, style: { sticks: "cartoon", cartoon: "lines", lines: "sticks" }[mol.style] || "sticks" });
     if (hcb) hcb.onchange = () => cmd("set_molecule", { mol: id, hydrogens: hcb.checked });
     const act = div.querySelector("button[title^='Make active']"), close = div.querySelector("button[title='Close']");
     cb.onchange = () => { mol.group.visible = cb.checked; redraw(); cmd("set_molecule", { mol: id, visible: cb.checked }); };
@@ -1438,58 +1540,127 @@ function disposeGroup(g) {
   g.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
   g.parent?.remove(g);
 }
-// dashed sticks for distances (screen lines are one pixel wide, too thin at print resolution)
-function figureDistances(color) {
-  const grp = new THREE.Group(), mat = new THREE.MeshPhongMaterial({ color, shininess: 10 });
-  const up = new THREE.Vector3(0, 1, 0);
+// dashed sticks for distances and H-bonds (screen lines are one pixel wide, too thin at print resolution)
+function figureDistances(bg) {
+  const grp = new THREE.Group(), dark = bg !== "black";
+  const pts = { distance: [], hbond: [] };
   for (const d of S.distances) {
-    const A = S.mols.get(d.a.mol)?.xyz, B = S.mols.get(d.b.mol)?.xyz;
-    if (!A || !B) continue;
-    const pa = new THREE.Vector3(A[3*d.a.idx], A[3*d.a.idx+1], A[3*d.a.idx+2]);
-    const pb = new THREE.Vector3(B[3*d.b.idx], B[3*d.b.idx+1], B[3*d.b.idx+2]);
-    const len = pa.distanceTo(pb), dir = pb.clone().sub(pa).normalize(), q = new THREE.Quaternion().setFromUnitVectors(up, dir);
-    for (let t = 0.12; t < len - 0.12; t += 0.32) {
-      const l = Math.min(0.18, len - 0.12 - t);
-      const c = new THREE.Mesh(FIG.cyl, mat);
-      c.position.copy(pa).addScaledVector(dir, t + l / 2);
-      c.quaternion.copy(q);
-      c.scale.set(0.045, l, 0.045);
-      grp.add(c);
-    }
+    const A = S.mols.get(d.a.mol), B = S.mols.get(d.b.mol);
+    if (A && B) pts[d.style === "hbond" ? "hbond" : "distance"].push(P3(A, d.a.idx), P3(B, d.b.idx));
   }
+  if (pts.distance.length) grp.add(dashedSticks(pts.distance, dark ? 0x333333 : 0xbfefff, 0.045, 0.18, 0.14));
+  if (pts.hbond.length) grp.add(dashedSticks(pts.hbond, dark ? 0x3f6fbf : 0x8fbfff, 0.035, 0.12, 0.12));
   overlay.add(grp);
   return grp;
 }
-function figureLabels(cam, W, H) {
-  const out = [], v = new THREE.Vector3();
-  const proj = (mol, i) => v.set(mol.xyz[3*i], mol.xyz[3*i+1], mol.xyz[3*i+2]).applyMatrix4(world.matrixWorld).project(cam);
-  const short = (mid, i) => {          // KCX201 OQ2 -> as in papers: residue name and number, the atom when it matters
-    const a = S.mols.get(mid).data.atoms[i];
-    const res = `${a[3]}${a[1]}${a[2] || ""}`;
-    const bb = ["CA", "N", "C", "O"].includes(a[4]) || a[3] === a[4] || ["HOH", "WAT"].includes(a[3]);
-    return (S.mols.size > 1 ? "" : "") + (bb ? res : `${res} ${a[4]}${a[5] ? ":" + a[5] : ""}`);
+const AA3 = new Set(["ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE", "LEU", "LYS", "MET", "PHE", "PRO",
+  "SER", "THR", "TRP", "TYR", "VAL", "KCX", "MSE", "SEP", "TPO", "PTR", "CSO", "LLP", "MLY", "HYP"]);
+const title = (t) => t.charAt(0) + t.slice(1).toLowerCase();
+// label text as in papers: Glu204, KCX201 (modified residues keep their code), Zn, W721, RBD; the atom name only when
+// several labels sit in one residue
+function paperLabel(mid, i, many) {
+  const a = S.mols.get(mid).data.atoms[i], el = S.mols.get(mid).data.element[i];
+  let t;
+  if (METALS.has((el || "").toUpperCase()) && a[3] === a[4]) t = title(el.toUpperCase());
+  else if (["HOH", "WAT", "DOD"].includes(a[3])) t = `W${a[1]}`;
+  else if (AA3.has(a[3])) t = `${["KCX", "MSE", "SEP", "TPO", "PTR", "CSO", "LLP", "MLY", "HYP"].includes(a[3]) ? a[3] : title(a[3])}${a[1]}${a[2] || ""}`;
+  else t = a[3];
+  return many ? `${t} ${a[4]}` : t;
+}
+// Place labels next to their atoms where they cover the least: try 12 directions at three distances, avoid the image
+// edge, other labels and the drawn atoms; the most crowded labels go first. A label placed far out gets a leader line.
+function figureLabels(cam, W, H, fontPx, half_w) {
+  const v = new THREE.Vector3(), pxA = W / (2 * half_w);
+  const toPx = (p) => { v.copy(p).applyMatrix4(world.matrixWorld).project(cam); return [(v.x + 1) / 2 * W, (1 - v.y) / 2 * H, v.z]; };
+  // occupancy of drawn atoms on a grid
+  const cell = Math.max(4, fontPx / 3), gw = Math.ceil(W / cell), gh = Math.ceil(H / cell), occ = new Uint8Array(gw * gh);
+  const mark = (x, y, r) => {
+    for (let gy = Math.max(0, Math.floor((y - r) / cell)); gy <= Math.min(gh - 1, Math.floor((y + r) / cell)); gy++)
+      for (let gx = Math.max(0, Math.floor((x - r) / cell)); gx <= Math.min(gw - 1, Math.floor((x + r) / cell)); gx++) occ[gy * gw + gx] = 1;
   };
+  for (const mol of S.mols.values()) {
+    if (!mol.group.visible) continue;
+    for (let i = 0; i < mol.data.atoms.length; i++) {
+      if (mol.zone && !mol.zone.has(i)) continue;
+      if (mol.hideH && mol.data.element[i] === "H") continue;
+      const [x, y, z] = toPx(P3(mol, i));
+      if (z < -1 || z > 1 || x < 0 || y < 0 || x > W || y > H) continue;
+      mark(x, y, 0.45 * pxA);
+    }
+  }
+  const occFrac = (bx, by, bw, bh) => {
+    let n = 0, t = 0;
+    for (let gy = Math.max(0, Math.floor(by / cell)); gy <= Math.min(gh - 1, Math.floor((by + bh) / cell)); gy++)
+      for (let gx = Math.max(0, Math.floor(bx / cell)); gx <= Math.min(gw - 1, Math.floor((bx + bw) / cell)); gx++) { t++; n += occ[gy * gw + gx]; }
+    return t ? n / t : 0;
+  };
+  const meas = document.createElement("canvas").getContext("2d");
+  meas.font = `${fontPx}px Helvetica, Arial, sans-serif`;
+  const items = [];
+  const perRes = new Map();
+  for (const k of S.labels.keys()) {
+    const [mid, idx] = k.split(":").map(Number), a = S.mols.get(mid)?.data.atoms[idx];
+    if (a) perRes.set(`${mid}:${a[0]}/${a[1]}${a[2]}`, (perRes.get(`${mid}:${a[0]}/${a[1]}${a[2]}`) || 0) + 1);
+  }
   for (const k of S.labels.keys()) {
     const [mid, idx] = k.split(":").map(Number), mol = S.mols.get(mid);
     if (!mol) continue;
-    proj(mol, idx);
-    if (v.z < -1 || v.z > 1 || Math.abs(v.x) > 1 || Math.abs(v.y) > 1) continue;
-    out.push({ kind: "label", text: short(mid, idx), x: (v.x + 1) / 2 * W + 0.012 * W, y: (1 - v.y) / 2 * H });
+    const [x, y, z] = toPx(P3(mol, idx));
+    if (z < -1 || z > 1 || x < 0 || y < 0 || x > W || y > H) continue;
+    const a = mol.data.atoms[idx];
+    items.push({ kind: "label", text: paperLabel(mid, idx, perRes.get(`${mid}:${a[0]}/${a[1]}${a[2]}`) > 1), ax: x, ay: y });
   }
   for (const d of S.distances) {
-    const a = S.mols.get(d.a.mol), b = S.mols.get(d.b.mol);
-    if (!a || !b) continue;
-    const pa = proj(a, d.a.idx).clone(), pb = proj(b, d.b.idx).clone();
-    out.push({ kind: "distance", text: d.div.textContent, x: ((pa.x + pb.x) / 2 + 1) / 2 * W,
-      y: (1 - (pa.y + pb.y) / 2) / 2 * H + 0.03 * H });
+    if (!d.label) continue;
+    const A = S.mols.get(d.a.mol), B = S.mols.get(d.b.mol);
+    if (!A || !B) continue;
+    const pa = toPx(P3(A, d.a.idx)), pb = toPx(P3(B, d.b.idx));
+    const nx = -(pb[1] - pa[1]), ny = pb[0] - pa[0], nl = Math.hypot(nx, ny) || 1;
+    items.push({ kind: "distance", text: d.div.textContent, ax: (pa[0] + pb[0]) / 2, ay: (pa[1] + pb[1]) / 2, perp: [nx / nl, ny / nl] });
   }
-  return out;
+  for (const it of items) { it.w = meas.measureText(it.text).width; it.h = fontPx * 1.05; it.crowd = occFrac(it.ax - 2 * fontPx, it.ay - 2 * fontPx, 4 * fontPx, 4 * fontPx); }
+  items.sort((p, q) => q.crowd - p.crowd);
+  const placed = [], result = [];
+  const overlap = (b, c) => Math.max(0, Math.min(b[0] + b[2], c[0] + c[2]) - Math.max(b[0], c[0])) * Math.max(0, Math.min(b[1] + b[3], c[1] + c[3]) - Math.max(b[1], c[1]));
+  const r0 = 0.5 * pxA + 0.25 * fontPx;
+  for (const it of items) {
+    let best = null;
+    const dirs = it.kind === "distance" ? [it.perp, [-it.perp[0], -it.perp[1]]]
+      : Array.from({ length: 12 }, (_, k) => [Math.cos(k * Math.PI / 6), -Math.sin(k * Math.PI / 6)]);
+    [r0, r0 + 0.9 * fontPx, r0 + 2 * fontPx].forEach((r, ri) => {
+      for (const [dx, dy] of dirs) {
+        const cx = it.ax + dx * (r + it.w / 2 * Math.abs(dx)), cy = it.ay + dy * (r + it.h / 2 * Math.abs(dy));
+        const box = [cx - it.w / 2, cy - it.h / 2, it.w, it.h];
+        const outside = box[0] < 2 || box[1] < 2 || box[0] + box[2] > W - 2 || box[1] + box[3] > H - 2;
+        let lab = 0;
+        for (const p of placed) lab += overlap(box, p.box) / (it.w * it.h);
+        const cost = (outside ? 1e3 : 0) + 40 * lab + 6 * occFrac(...box) + 0.8 * ri + (dx < -0.1 ? 0.15 : 0) + (dy > 0.1 ? 0.1 : 0);
+        if (!best || cost < best.cost) best = { cost, box, r, dx, dy };
+      }
+    });
+    const out = { kind: it.kind, text: it.text, x: best.box[0], y: best.box[1] + it.h / 2, w: it.w };
+    if (best.r > r0 + 0.5 * fontPx && it.kind === "label") {       // leader line from the atom to the label's near edge
+      const ex = Math.min(Math.max(it.ax, best.box[0]), best.box[0] + best.box[2]);
+      const ey = Math.min(Math.max(it.ay, best.box[1]), best.box[1] + best.box[3]);
+      const len = Math.hypot(ex - it.ax, ey - it.ay) || 1, s0 = 0.35 * pxA;
+      out.leader = [it.ax + (ex - it.ax) * s0 / len, it.ay + (ey - it.ay) * s0 / len, ex, ey];
+    }
+    placed.push({ box: best.box });
+    result.push(out);
+  }
+  return result;
 }
 function drawLabels(g, labels, fontPx, bg) {
+  const col = bg === "black" ? "#f2f2f2" : "#111111";
   g.font = `${fontPx}px Helvetica, Arial, sans-serif`;
   g.textBaseline = "middle";
-  g.fillStyle = bg === "black" ? "#f2f2f2" : "#111111";
-  for (const lb of labels) { g.textAlign = lb.kind === "distance" ? "center" : "left"; g.fillText(lb.text, lb.x, lb.y); }
+  g.textAlign = "left";
+  g.strokeStyle = col; g.lineWidth = Math.max(1, fontPx / 14);
+  for (const lb of labels) {
+    if (lb.leader) { g.beginPath(); g.moveTo(lb.leader[0], lb.leader[1]); g.lineTo(lb.leader[2], lb.leader[3]); g.stroke(); }
+    g.fillStyle = col;
+    g.fillText(lb.text, lb.x, lb.y);
+  }
 }
 async function renderFigure(o) {
   for (let t = 0; anim && t < 100; t++) await sleep(20);
@@ -1522,7 +1693,7 @@ async function renderFigure(o) {
   });
   const lineScale = RW / Math.max(1, renderer.domElement.clientWidth) * 0.6;
   for (const lm of lineMaterials) { swap(lm, "linewidth", lm.linewidth * lineScale); lm.resolution.set(RW, RH); }
-  const distGrp = figureDistances(bg === "black" ? 0xbfefff : 0x333333);
+  const distGrp = figureDistances(bg);
   const rt = new THREE.WebGLRenderTarget(RW, RH, { samples: 4 });
   const prevClear = renderer.getClearColor(new THREE.Color()), prevAlpha = renderer.getClearAlpha();
   const shoot = () => {
@@ -1550,13 +1721,14 @@ async function renderFigure(o) {
   try {
     if (o.maps.length) { figMaps = await buildFigureMaps(o, true); world.add(figMaps); }
     const plain = shoot();
-    const labels = figureLabels(cam, W, H);
+    const labels = figureLabels(cam, W, H, o.font_px, o.half_w);
     const lab = document.createElement("canvas");
     lab.width = W; lab.height = H;
     const g = lab.getContext("2d");
     g.drawImage(plain, 0, 0);
     drawLabels(g, labels, o.font_px, bg);
     result = { plain: plain.toDataURL("image/png"), png: lab.toDataURL("image/png"), labels, font_px: o.font_px,
+      hbonds: S.distances.some((d) => d.style === "hbond"), coordination: [...S.mols.values()].some((m) => m.group.visible && m.hasCoord),
       carbon: Object.fromEntries([...S.mols.keys()].map((id) => [String(id), "#" + new THREE.Color(carbonColor(id)).getHexString()])) };
     if (o.uncarved) {
       disposeGroup(figMaps);

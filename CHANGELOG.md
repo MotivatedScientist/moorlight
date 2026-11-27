@@ -7,6 +7,9 @@
   carved to the shown atoms with an uncarved companion and a warning when carving hides density, labels as editable SVG
   text, settings JSON and a draft legend. `figure_tour` makes one figure per tour stop; `pymol=true` writes a PyMOL
   script with the same view, levels and carving. Colour-blind-safe palette (`palette=cvd`).
+- Figure labels placed automatically off the atoms (avoiding labels, atoms and edges), paper-style text, leader lines.
+- `cartoon` molecule style (main chain as a tube, side chains from Cα); metal coordination drawn as dashes.
+- `show_distance style=hbond` and `show_hbonds`; `show_zone` draws only residues near given atoms.
 
 ## 0.3.0
 

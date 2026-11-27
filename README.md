@@ -44,6 +44,8 @@ moorlight dark.pdb dark.mtz:dark light.mtz:light   # file.mtz:label names the ma
   map's level (weaker levels more transparent), cut to within 2 Å of the shown atoms. It writes `figures/<name>.png`, a
   plain PNG, an SVG with the labels as editable text, `<name>_uncarved.png`, the settings (`<name>.json`) and a draft
   legend with maps, levels, resolution and carving. It warns when carving hides density stronger than the lowest level.
+  Labels are placed next to their atoms where they cover least (other labels, atoms, the image edge), in paper style
+  (Glu204, Zn, W721, RBD), with leader lines when they sit farther out.
   `figure_tour` makes one figure per tour stop, named after the stop, with the stop's text in its legend; `pymol=true`
   writes a PyMOL script with the same view, levels and carving.
 - **Claude tab.** A chat running headless Claude Code with every viewer command as a tool. Each message carries your current view (visible maps and levels, centre, selected atoms), so "this map" means what you're looking at. Claude can take screenshots of the view. The *shell* box lets it run commands such as TorchRef refinements; it's off by default.
@@ -100,6 +102,10 @@ Underneath is a small HTTP API:
 - **Slices:** `slice` (style `slice`/`mesh`, `atoms=[...]` for a plane through atoms, `fix`, `depth`, `thickness`, `map_id`)
   returns where the plane is and its strongest positive and negative values with the nearest atoms. Saved views and tour
   stops keep the slice.
+- **Styles:** `set_molecule style=cartoon` draws the main chain as a tube with side chains as sticks from Cα (ligands,
+  metals and waters in full); metal coordination is drawn as grey dashes in every style.
+- **H-bonds:** `show_distance a b style=hbond` (thin blue dashes, value optional); `show_hbonds atoms=[...]` finds and draws
+  the N/O contacts of residues within 3.3 Å.
 - **Zone:** `show_zone atoms=[...] radius=5` draws only whole residues near those atoms (like PyMOL's `byres … within`); `clear=true` undoes it.
 - **Figures:** `figure` (preset, dpi, background, style, levels, carve, palette `cvd`, pymol) and `figure_tour`.
 - **Screenshots:** `screenshot` waits until the view has settled and its map contours are computed. It takes `width`, `crop` and `path`.

@@ -415,6 +415,7 @@ class Session:
                           "f": x.f, "phi": x.phi} for x, lv in map_levels],
                 "models": [{"id": m.id, "name": m.name, "path": m.path} for m in self.molecules.values() if m.visible],
                 "distances": bool(any(lb.get("kind") == "distance" for lb in res.get("labels", []))),
+                "hbonds": bool(res.get("hbonds")), "coordination": bool(res.get("coordination")),
                 "view": self._snapshot()}
         d = self._path(out_dir) if out_dir else os.path.join(self.workdir, "figures")
         paths = F.write_files(d, name, {**res, "width": W, "height": H}, spec)
@@ -871,7 +872,7 @@ class Session:
     @command("Show or hide a molecule, set its carbon colour, drawing style or hydrogens. The panel checkboxes call this too, so "
              "`state` always reports what the user sees.",
              {"mol": ("integer", "molecule id"), "visible": ("boolean", ""), "color": ("string", "css colour for carbons, "
-              "e.g. '#ff80c0' or 'cyan'; 'default' resets"), "style": ("string", "'sticks' or 'lines'"),
+              "e.g. '#ff80c0' or 'cyan'; 'default' resets"), "style": ("string", "'sticks', 'lines' or 'cartoon' (main chain as a tube, side chains as sticks)"),
               "hydrogens": ("boolean", "show hydrogens")}, view_only=True)
     def set_molecule(self, mol, visible=None, color=None, style=None, hydrogens=None):
         m = self.mol(mol)
@@ -880,8 +881,8 @@ class Session:
         if color:
             m.color = None if color == "default" else str(color)
         if style:
-            if style not in ("sticks", "lines"):
-                raise ValueError("style must be 'sticks' or 'lines'")
+            if style not in ("sticks", "lines", "cartoon"):
+                raise ValueError("style must be 'sticks', 'lines' or 'cartoon' (main chain as a tube, side chains as sticks)")
             m.style = style
         if hydrogens is not None:
             m.hydrogens = bool(hydrogens)
@@ -1096,9 +1097,10 @@ class Session:
                     self.label_atoms([a])
                 except ValueError:
                     pass
-            for a, b in ann.get("distances", []):
+            for e in ann.get("distances", []):
                 try:
-                    self.show_distance(a, b)
+                    self.show_distance(e[0], e[1], style=e[2] if len(e) > 2 else "distance",
+                                       label=e[3] if len(e) > 3 else None)
                 except ValueError:
                     pass
         if isinstance(snap.get("slice"), dict):
@@ -1357,13 +1359,52 @@ class Session:
         self.broadcast({"type": "annotate", "clear_labels": bool(clear), "labels": [{"mol": m.id, "idx": i} for m, i in refs]})
         return [self._atom_label(m, i) for m, i in refs]
 
-    @command("Draw a dashed distance line with its value between two atoms (also in screenshots).",
-             {"a": ("string", ATOM_SPEC), "b": ("string", ATOM_SPEC), **MOL}, view_only=True)
-    def show_distance(self, a, b, mol=None):
+    @command("Draw a dashed line between two atoms (also in screenshots and figures): style 'distance' (with its value) or "
+             "'hbond' (thinner, blue, no value unless label=true).",
+             {"a": ("string", ATOM_SPEC), "b": ("string", ATOM_SPEC),
+              "style": ("string", "'distance' (default) or 'hbond'"),
+              "label": ("boolean", "show the value (default: true for distance, false for hbond)"), **MOL}, view_only=True)
+    def show_distance(self, a, b, mol=None, style="distance", label=None):
+        if style not in ("distance", "hbond"):
+            raise ValueError("style: 'distance' or 'hbond'")
+        label = (style == "distance") if label is None else bool(label)
         (ma, ia), (mb, ib) = self._ref(a, mol), self._ref(b, mol)
-        self.annotations["distances"].append([f"{ma.id}#{self._atom_label(ma, ia)}", f"{mb.id}#{self._atom_label(mb, ib)}"])
-        self.broadcast({"type": "annotate", "distances": [{"a": {"mol": ma.id, "idx": ia}, "b": {"mol": mb.id, "idx": ib}}]})
+        self.annotations["distances"].append([f"{ma.id}#{self._atom_label(ma, ia)}", f"{mb.id}#{self._atom_label(mb, ib)}",
+                                              style, label])
+        self.broadcast({"type": "annotate", "distances": [{"a": {"mol": ma.id, "idx": ia}, "b": {"mol": mb.id, "idx": ib},
+                                                            "style": style, "label": label}]})
         return round(float(np.linalg.norm(ma.xyz[ia] - mb.xyz[ib])), 3)
+
+    @command("Find and draw hydrogen bonds of the given residues or atoms: N/O pairs within max_dist Å to other residues "
+             "(of the same molecule, waters included). Drawn as 'hbond' dashes; returns the list with distances.",
+             {"atoms": ("array", "residue or atom specs, e.g. ['A/85', 'A/401']"),
+              "max_dist": ("number", "Å (default 3.3)"), "label": ("boolean", "show the distances (default false)"),
+              **MOL}, view_only=True)
+    def show_hbonds(self, atoms, max_dist=3.3, label=False, mol=None):
+        if isinstance(atoms, str):
+            atoms = [atoms]
+        found, seen = [], set()
+        for spec in atoms:
+            m, idx = self.atoms(spec, mol)
+            polar = [i for i in idx if m.elements[i] in ("N", "O")]
+            own = {m.keys[i][:3] for i in idx}
+            tree = cKDTree(m.xyz)
+            for i in polar:
+                for j in tree.query_ball_point(m.xyz[i], float(max_dist)):
+                    if m.elements[j] not in ("N", "O") or m.keys[j][:3] in own:
+                        continue
+                    ai, aj = m.keys[i][4], m.keys[j][4]
+                    if ai and aj and ai != aj:                 # different conformers do not bond
+                        continue
+                    key = (m.id, min(i, j), max(i, j))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    d = float(np.linalg.norm(m.xyz[i] - m.xyz[j]))
+                    self.show_distance(f"{m.id}#{self._atom_label(m, i)}", f"{m.id}#{self._atom_label(m, j)}",
+                                       style="hbond", label=label)
+                    found.append({"a": self._atom_label(m, i), "b": self._atom_label(m, j), "distance": round(d, 2)})
+        return sorted(found, key=lambda x: x["distance"])
 
     @command("Remove all labels and distance lines.", view_only=True)
     def clear_annotations(self):

@@ -73,7 +73,10 @@ with one clear statement. The user drives the pace.
 
 When the user wants figures (for a manuscript, a talk), each stop becomes one: `figure_tour` writes one figure per stop
 (PNG, SVG with editable labels, draft legend from the stop's text), or `figure` for the current view. Before that:
-- Label only what the text names (`label_atoms`), add the distances it quotes (`show_distance`), and frame tightly
+- Unclutter first: `show_zone` around the site, `set_molecule style=cartoon` for the main molecule when the main chain
+  does nothing interesting, a reference model as thin lines reduced to what differs.
+- Label only what the text names (`label_atoms`; figures place and shorten the labels), add the distances it quotes
+  (`show_distance`) and the H-bonds it discusses (`show_hbonds` or `style=hbond`), and frame tightly
   (`frame_atoms`, small slab): a figure carries less than a screen.
 - Keep the same orientation and levels across stops that are compared (time points, data sets), and say so in the legend.
 - Read the warnings: carving can hide density. If it does, look at `<name>_uncarved.png` and either widen `carve` or

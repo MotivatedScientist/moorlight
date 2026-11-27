@@ -21,7 +21,17 @@ Review fixes before the merge:
 - A note in the summary when maps are resampled coarser than their grid (use `--around` for exact peak values).
 - PDB-REDO downloads are announced and capped at 500 MB; `again` writes the page next to its spec only.
 
+After the merge (from testing on real data):
+- The "Unpacking maps…" overlay no longer stays over the view and blocks input.
+- MTZ columns with labels that do not say the kind (e.g. `FDDCAT`) are classified from the map values;
+  `file.mtz=name:F,PHI,diff`, `--diff MAP` / `--density MAP` set it; `again` keeps the kinds of the spec.
+- `--slice` and `--open-plane NAME` open the page in Slice mode or on a plane.
+
 ### Viewer and agent API
+- **Map slices** as in shared pages (*Maps as: Slice*): live plane facing the viewer, Fix plane, Depth, Thickness,
+  plane through selected atoms; `slice` command for agents, with the strongest values on the plane. Kept in saved views.
+- **Level sliders** per map as in shared pages (log scale up to the map's largest value, level in σ and map units).
+- Maps whose labels do not tell the kind are classified from their values when first computed.
 - TorchRef difference MTZ (new layout: `dF`, `FEXT`, `FWT` extrapolated map) detected with the right map names; a
   refinement folder with `*_dark.pdb` / `*_light.pdb` loads both models (light active, dark as reference) with the
   difference and extrapolated maps first.

@@ -68,7 +68,7 @@ What the commands cover:
 - **Measuring:** `density_at_atoms`, `density_profile`, `density_at_point`, `distance`, `peaks` (with whole-cell rank),
   `map_correlation`, `ligands`.
 - **Display for figures:** `show_zone`, `set_molecule style=cartoon`, `show_hbonds`, `show_distance style=hbond`.
-- **Figures:** `figure` (current view at journal size, nested map surfaces, carved, SVG labels, legend draft, optional
+- **Figures:** `figure_preview` (the user sees the figure look in the viewer), `figure` (current view at journal size, nested map surfaces, carved, SVG labels, legend draft, optional
   PyMOL script), `figure_tour` (one per tour stop).
 - **Building and refinement:** `refine` (map, difference-map or both targets), `accept_refinement` / `reject_refinement`,
   `fix_atoms`, `add_altconf`, `rotamers` / `set_rotamer`, `mutate`, `flip_peptide`, `add_water`, `add_ion`, `find_waters`,

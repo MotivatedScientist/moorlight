@@ -10,6 +10,7 @@
 - Figure labels placed automatically off the atoms (avoiding labels, atoms and edges), paper-style text, leader lines.
 - `cartoon` molecule style (main chain as a tube, side chains from Cα); metal coordination drawn as dashes.
 - `show_distance style=hbond` and `show_hbonds`; `show_zone` draws only residues near given atoms.
+- *Preview* toggle (`figure_preview`): the viewer as the figure will look; maps stay mesh until the render.
 - Figures without scripting: *figure look* (default on: cartoon main chain, residues within 5 Å of the labelled atoms, for
   the render only); dialog fields for levels and legend text; *Export figures…* in the tour box; colour squares open a
   colour picker; *Show only near*, *Show all* and *H-bonds* buttons for the clicked atoms. Clicked labels and

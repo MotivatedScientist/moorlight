@@ -40,7 +40,8 @@ moorlight dark.pdb dark.mtz:dark light.mtz:light   # file.mtz:label names the ma
   with ◀ ▶ in the Display tab, and share it as a JSON file: `tour_load` opens the models and maps it needs. Single views can
   be saved with `save_view` / `restore_view`.
 - **Publication figures without scripting.** Click the atoms that matter (they get labels), press *Figure…* and *Make
-  figure*. The *figure look* (on by default, for the render only) draws the main chain of stick models as cartoon and only
+  figure*. *Preview* in the toolbar shows the view as the figure will look (white, figure look, placed labels;
+  maps stay mesh and become surfaces in the figure). The *figure look* (on by default, for the render only) draws the main chain of stick models as cartoon and only
   the residues within 5 Å of the labelled atoms; your view stays as it is. The dialog also takes levels, legend text and
   the PyMOL option. In the panel: click a molecule's colour square to change its carbon colour; *Show only near* / *Show
   all* / *H-bonds* act on the clicked atoms; the tour box has *Export figures…* (one figure per stop). Clicked labels and
@@ -113,7 +114,7 @@ Underneath is a small HTTP API:
 - **H-bonds:** `show_distance a b style=hbond` (thin blue dashes, value optional); `show_hbonds atoms=[...]` finds and draws
   the N/O contacts of residues within 3.3 Å.
 - **Zone:** `show_zone atoms=[...] radius=5` draws only whole residues near those atoms (like PyMOL's `byres … within`); `clear=true` undoes it.
-- **Figures:** `figure` (preset, dpi, background, style, levels, carve, palette `cvd`, pymol) and `figure_tour`.
+- **Figures:** `figure_preview on=true/false`, `figure` (preset, dpi, background, style, levels, carve, palette `cvd`, pymol) and `figure_tour`.
 - **Screenshots:** `screenshot` waits until the view has settled and its map contours are computed. It takes `width`, `crop` and `path`.
 
 ## Claude skill: guided result tours

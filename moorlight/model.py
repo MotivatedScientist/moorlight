@@ -240,11 +240,14 @@ class Molecule:
             "display": self.display(),
         }
 
-    def display(self):
-        out = {"visible": self.visible, "color": self.color, "style": self.style, "hydrogens": self.hydrogens,
+    def display(self, style=..., zone=...):
+        """Display attributes; style / zone override the current ones (e.g. the state under a figure preview)."""
+        style = self.style if style is ... else style
+        zone = self.zone if zone is ... else zone
+        out = {"visible": self.visible, "color": self.color, "style": style, "hydrogens": self.hydrogens,
                "zone": None, "zone_residues": None}
-        if self.zone is not None:
-            z = {tuple(k) for k in self.zone}
+        if zone is not None:
+            z = {tuple(k) for k in zone}
             out["zone"] = [i for i, k in enumerate(self.keys) if k[:3] in z]
             out["zone_residues"] = [list(k) for k in sorted(z)]
         return out

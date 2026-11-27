@@ -98,9 +98,10 @@ function render() {
   needsRender = false;
   updateCamera();
   updateSlice();
-  crossObj.visible = S.cross;
+  crossObj.visible = S.cross && !S.preview;
   renderer.render(scene, camera);
   updateLabels();
+  if (S.preview) updatePreviewLabels();
 }
 const redraw = () => (needsRender = true);
 
@@ -160,6 +161,7 @@ function onServer(m) {
       break;
     case "mol_display": applyDisplay(m.mol, m); break;
     case "slice": applySlice(m); break;
+    case "figure_preview": setPreview(m.on, m.radius); break;
     case "annotate": annotate(m); break;
     case "tour": renderTour(m); break;
     case "log": addLog(m.text); break;
@@ -217,7 +219,11 @@ async function takeScreenshot(opt = {}) {
   cv.width = W; cv.height = H;
   const g = cv.getContext("2d");
   g.drawImage(src, 0, 0);
-  if (opt.labels !== false) {   // the labels are HTML on top of the canvas: draw them in
+  if (opt.labels !== false && S.preview) {      // figure preview: its placed labels
+    const half_w = S.zoom * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * camera.aspect;
+    const labs = figureLabels(camera, src.clientWidth, src.clientHeight, 13, half_w);
+    g.save(); g.scale(k, k); drawLabels(g, labs, 13, "white"); g.restore();
+  } else if (opt.labels !== false) {   // the labels are HTML on top of the canvas: draw them in
     g.font = `${12 * k}px ui-monospace, Menlo, monospace`;
     g.textBaseline = "middle";
     g.shadowColor = "#000"; g.shadowBlur = 3 * k;
@@ -443,7 +449,7 @@ function dashes(a, b, dash = 0.2, gap = 0.14) {
 function dashedSticks(pts, color, r, dash, gap) {
   const segs = [];
   for (let n = 0; n < pts.length; n += 2) segs.push(...dashes(pts[n], pts[n+1], dash, gap));
-  const im = new THREE.InstancedMesh(cylGeo, solidMat, Math.max(1, segs.length));
+  const im = new THREE.InstancedMesh(S.preview ? FIG.cyl : cylGeo, S.preview ? FIG.mat : solidMat, Math.max(1, segs.length));
   im.count = segs.length;
   segs.forEach(([p, q], n) => {
     _v.subVectors(q, p);
@@ -554,7 +560,7 @@ function stickMeshes(mol, id, keep, lone, cartoon = null) {
   }
   const out = [];
   if (cyl.length) {
-    const im = new THREE.InstancedMesh(cylGeo, solidMat, cyl.length);
+    const im = new THREE.InstancedMesh(S.preview ? FIG.cyl : cylGeo, S.preview ? FIG.mat : solidMat, cyl.length);
     cyl.forEach(([p, q, r, col], n) => {
       _v.subVectors(q, p);
       const len = _v.length();
@@ -574,7 +580,7 @@ function stickMeshes(mol, id, keep, lone, cartoon = null) {
     allBalls.push(i);
   }
   if (allBalls.length) {
-    const im = new THREE.InstancedMesh(sphereGeo, solidMat, allBalls.length);
+    const im = new THREE.InstancedMesh(S.preview ? FIG.sphere : sphereGeo, S.preview ? FIG.mat : solidMat, allBalls.length);
     allBalls.forEach((i, n) => {
       let r = isH(i) ? H_BALL_R : BALL_R;
       if (loneSet.has(i)) r = isWater(i) ? WATER_R : (isH(i) ? H_BALL_R : ION_R);
@@ -770,6 +776,7 @@ function annotate(m) {
   if (m.clear_distances) { for (const d of S.distances) { d.div.remove(); overlay.remove(d.line); } S.distances = []; }
   for (const l of m.labels || []) addLabel(l.mol, l.idx);
   for (const d of m.distances || []) if (S.mols.get(d.a.mol) && S.mols.get(d.b.mol)) addDistance(d.a, d.b, d.style, d.label);
+  if (S.preview) previewDistances();
   redraw();
 }
 function updateLabels() {
@@ -983,6 +990,7 @@ async function onAtomClick(p, e) {
     S.selection = S.selection.slice(-20);
     if (p.mol !== S.activeMol) { S.activeMol = p.mol; cmd("set_active_molecule", { mol: p.mol }).catch(() => {}); }
     pushView();
+    if (S.preview) refreshPreviewSoon();
     return;
   }
   S.toolClicks.push(p);
@@ -1736,6 +1744,7 @@ async function renderFigure(o) {
   for (const m of S.maps.values()) swap(m.obj, "visible", false);
   if (SLICE.mesh && o.style !== "slice") swap(SLICE.mesh, "visible", false);
   for (const d of S.distances) swap(d.line, "visible", false);
+  if (PREVIEW.dist) swap(PREVIEW.dist, "visible", false);
   for (const mol of S.mols.values()) mol.group.traverse((x) => {
     if (x.isInstancedMesh) {
       if (x.geometry === sphereGeo) swap(x, "geometry", FIG.sphere);
@@ -1801,6 +1810,57 @@ async function renderFigure(o) {
   }
   return result;
 }
+
+// ------------------------------------------------------------- figure preview
+// The viewer as the figure will look: the figure look (cartoon, zone; applied on the server), white background,
+// figure atoms, thick dashes, placed paper-style labels. Maps stay as mesh (they become surfaces in the figure).
+const PREVIEW = { dist: null, radius: 5, timer: null, labelsEl: null };
+function setPreview(on, radius) {
+  if (radius) PREVIEW.radius = radius;
+  const was = !!S.preview;
+  S.preview = !!on;
+  $("#btn-preview").setAttribute("aria-pressed", String(S.preview));
+  $("#btn-preview").classList.toggle("active", S.preview);
+  document.body.classList.toggle("preview", S.preview);
+  const bg = S.preview ? 0xffffff : 0x000000;
+  scene.background = new THREE.Color(bg);
+  scene.fog.color = new THREE.Color(bg);
+  if (was !== S.preview) for (const id of S.mols.keys()) rebuildMolGeometry(id);
+  for (const d of S.distances) d.line.visible = !S.preview;
+  previewDistances();
+  if (!S.preview && PREVIEW.labelsEl) PREVIEW.labelsEl.innerHTML = "";
+  status(S.preview ? "Figure preview: as the figure will look (maps become surfaces in the figure). Click atoms to label them; the shown residues follow." : "");
+  redraw();
+}
+function previewDistances() {
+  if (PREVIEW.dist) { disposeGroup(PREVIEW.dist); PREVIEW.dist = null; }
+  for (const d of S.distances) d.line.visible = !S.preview;
+  if (S.preview && S.distances.length) PREVIEW.dist = figureDistances("white");
+}
+function refreshPreviewSoon() {          // after the label click reached the server (pushView waits 150 ms)
+  clearTimeout(PREVIEW.timer);
+  PREVIEW.timer = setTimeout(() => cmd("figure_preview", { on: true, look_radius: PREVIEW.radius }).catch(() => {}), 450);
+}
+function updatePreviewLabels() {
+  if (!PREVIEW.labelsEl) {
+    PREVIEW.labelsEl = document.createElement("div");
+    PREVIEW.labelsEl.id = "preview-labels";
+    vp.appendChild(PREVIEW.labelsEl);
+  }
+  const W = renderer.domElement.clientWidth, H = renderer.domElement.clientHeight;
+  if (!W || !H) return;
+  const fontPx = 13, half_w = S.zoom * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * camera.aspect;
+  scene.updateMatrixWorld();
+  const labels = figureLabels(camera, W, H, fontPx, half_w);
+  let svg = `<svg width="${W}" height="${H}">`, html = "";
+  for (const lb of labels) {
+    if (lb.leader) svg += `<line x1="${lb.leader[0]}" y1="${lb.leader[1]}" x2="${lb.leader[2]}" y2="${lb.leader[3]}"/>`;
+    html += `<span style="left:${lb.x}px;top:${lb.y}px"></span>`;
+  }
+  PREVIEW.labelsEl.innerHTML = svg + "</svg>" + html;
+  PREVIEW.labelsEl.querySelectorAll("span").forEach((sp, k) => { sp.textContent = labels[k].text; });
+}
+$("#btn-preview").onclick = () => cmd("figure_preview", { on: !S.preview, look_radius: PREVIEW.radius });
 
 // ------------------------------------------------------------------- map slices
 // As in shared pages: the map drawn on a plane (green +, red -; the map colour for density maps; brighter towards
@@ -2015,6 +2075,7 @@ async function init() {
   if (st.rsr) startRSR({ mol: st.rsr.mol, idx: st.rsr.idx });
   if (st.tour) renderTour(st.tour);
   if (st.slice) applySlice(st.slice);
+  if (st.figure_preview) setPreview(true);
   renderMolList();
   connect();
   setTimeout(pushView, 500);   // the server learns this tab's zoom, slab and rotation

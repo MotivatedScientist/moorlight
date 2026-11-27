@@ -112,3 +112,11 @@ h3 { margin: 10px 0 4px; font-size: 12px; text-transform: uppercase; letter-spac
 #figure-form h2 { margin: 0; font-size: 15px; }
 #figure-form label { display: flex; gap: 6px; align-items: center; }
 #figure-form label > input:not([type=checkbox]), #figure-form label > select { flex: 1; }
+
+/* figure preview: the screen labels give way to the placed figure labels */
+body.preview #labels { display: none; }
+#preview-labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+#preview-labels svg { position: absolute; inset: 0; }
+#preview-labels line { stroke: #111; stroke-width: 1; }
+#preview-labels span { position: absolute; transform: translateY(-50%); font: 13px Helvetica, Arial, sans-serif; color: #111;
+  white-space: nowrap; }

@@ -258,6 +258,45 @@ class XMap:
         arr /= self.rms
         return arr, origin, step
 
+    def surfaces(self, center, radius, levels, carve_xyz=None, carve=None, step=0.33):
+        """Smooth closed contour surfaces for figures: tricubic resampling at `step` Å, marching cubes at each level
+        (sigma; difference maps at + and -). carve: keep only triangles whose corners all lie within `carve` Å of
+        carve_xyz. Returns list of (sign, level, verts f32 (n,3), normals f32 (n,3), faces u32 (m,3))."""
+        from skimage.measure import marching_cubes
+
+        step = max(float(step), 2 * radius / 200)
+        n = int(np.ceil(2 * radius / step)) + 1
+        origin = np.asarray(center, dtype=float) - radius
+        arr = np.zeros((n, n, n), dtype=np.float32)
+        tr = gemmi.Transform()
+        tr.mat.fromlist([[step, 0, 0], [0, step, 0], [0, 0, step]])
+        tr.vec.fromlist(origin.tolist())
+        self.grid.interpolate_values(arr, tr, order=3)
+        arr = (arr - self.mean) / self.rms
+        tree = None
+        if carve and carve_xyz is not None and len(carve_xyz):
+            from scipy.spatial import cKDTree
+            tree = cKDTree(np.asarray(carve_xyz, dtype=float))
+        out = []
+        for sign in ([1, -1] if self.kind == "diff" else [1]):
+            a = arr if sign > 0 else -arr
+            for lev in levels:
+                if a.max() < lev:
+                    continue
+                verts, faces, normals, _ = marching_cubes(a, float(lev), allow_degenerate=False)
+                verts = verts * step + origin
+                if tree is not None:
+                    d, _ = tree.query(verts, distance_upper_bound=float(carve))
+                    keep = np.isfinite(d)
+                    faces = faces[keep[faces].all(1)]
+                    used = np.unique(faces)
+                    remap = np.full(len(verts), -1, np.int64)
+                    remap[used] = np.arange(len(used))
+                    verts, normals, faces = verts[used], normals[used], remap[faces]
+                out.append((sign, float(lev), verts.astype(np.float32), (-normals).astype(np.float32),
+                            faces.astype(np.uint32)))
+        return out
+
     def value_at(self, xyz):
         return self.grid.interpolate_value(gemmi.Position(*xyz))
 

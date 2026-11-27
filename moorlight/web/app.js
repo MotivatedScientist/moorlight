@@ -168,7 +168,11 @@ function onServer(m) {
     case "rsr_end": endRSR(); renderUndo(); break;
     case "view_request":
       send({ type: "reply", id: m.id, data: { center: (anim ? anim.to : S.center).toArray(), orient: rot.quaternion.toArray(),
-        zoom: S.zoom, slab: S.slab } });
+        zoom: S.zoom, slab: S.slab, aspect: camera.aspect || 1 } });
+      break;
+    case "figure_request":
+      renderFigure(m).then((data) => send({ type: "reply", id: m.id, data }),
+        (err) => { console.error(err); send({ type: "reply", id: m.id, data: `error: ${err}` }); });
       break;
     case "screenshot_request":
       takeScreenshot(m).then((data) => send({ type: "reply", id: m.id, data }), (err) => send({ type: "reply", id: m.id, data: `error: ${err}` }));
@@ -1010,6 +1014,22 @@ $("#btn-save").onclick = () => {
   const def = mol?.data.path ? mol.data.path.replace(/(\.[^.]+)$/, "_coot$1") : "model.pdb";
   promptPopup("Save model", [{ key: "path", label: "path", value: def }], async (v) => status("saved " + await cmd("save_model", { path: v.path })));
 };
+$("#btn-figure").onclick = () => $("#figure-dlg").classList.remove("hidden");
+$("#figure-cancel").onclick = () => $("#figure-dlg").classList.add("hidden");
+$("#figure-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target), args = {};
+  for (const [k, v] of f.entries()) if (v !== "") args[k] = v;
+  args.dpi = +args.dpi; args.carve = +args.carve; args.pymol = f.has("pymol");
+  $("#figure-dlg").classList.add("hidden");
+  status("Making the figure…");
+  try {
+    const r = await cmd("figure", args);
+    status(`Figure: ${r.files.png}${r.warnings.length ? "  ⚠ " + r.warnings.join("; ") : ""}`);
+    addLog(`figure written: ${Object.values(r.files).join(", ")}`);
+    for (const w of r.warnings) addLog("⚠ " + w);
+  } catch (err) { /* cmd shows the error */ }
+};
 $("#btn-open").onclick = () => promptPopup("Open file or TorchRef directory", [{ key: "path", label: "path" }], async (v) => {
   const p = v.path;
   if (/\.mtz$/i.test(p)) await cmd("load_mtz", { path: p });
@@ -1368,6 +1388,192 @@ window.moorlight = {
     return [r.left + (v.x + 1) / 2 * r.width, r.top + (1 - v.y) / 2 * r.height];
   },
 };
+
+// ------------------------------------------------------------------- figures
+// Publication figures of the current view, rendered off screen at journal size: orthographic, smoother atoms with
+// a little shine, maps as nested transparent surfaces (weaker levels more transparent), distances as dashed sticks,
+// labels returned as text positions (the server writes them into an SVG) and drawn into one PNG.
+const FIG = { sphere: new THREE.SphereGeometry(1, 32, 24), cyl: new THREE.CylinderGeometry(1, 1, 1, 28, 1, true),
+  mat: new THREE.MeshPhongMaterial({ color: 0xffffff, shininess: 45, specular: 0x2a2a2a }) };
+
+async function fetchFigureSurfaces(id, carved) {
+  const buf = await (await fetch(`/api/figure/surfaces?map=${id}&carved=${carved ? 1 : 0}`)).arrayBuffer();
+  const hlen = new DataView(buf).getUint32(0, true);
+  const h = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, hlen)));
+  let off = 4 + hlen;
+  return h.surfaces.map((sf) => {
+    const v = new Float32Array(buf, off, sf.nverts * 3); off += sf.nverts * 12;
+    const n = new Float32Array(buf, off, sf.nverts * 3); off += sf.nverts * 12;
+    const f = new Uint32Array(buf, off, sf.nfaces * 3); off += sf.nfaces * 12;
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(v.slice(), 3));
+    g.setAttribute("normal", new THREE.BufferAttribute(n.slice(), 3));
+    g.setIndex(new THREE.BufferAttribute(f.slice(), 1));
+    return { sign: sf.sign, level: sf.level, geom: g };
+  });
+}
+// surfaces of all figure maps; inner (strong) levels first and solid enough to hide what is behind, outer ones fainter
+async function buildFigureMaps(o, carved) {
+  const grp = new THREE.Group();
+  for (const fm of o.maps) {
+    const surfs = await fetchFigureSurfaces(fm.id, carved);
+    const order = [...fm.levels].sort((a, b) => a - b);
+    for (const sf of surfs) {
+      const k = order.indexOf(sf.level), nk = order.length;
+      const opacity = fm.opacity[Math.min(fm.opacity.length - 1, Math.round(k * (fm.opacity.length - 1) / Math.max(1, nk - 1)))];
+      const color = fm.kind === "diff" ? (sf.sign > 0 ? fm.colors[0] : fm.colors[1]) : fm.colors[0];
+      const mat = new THREE.MeshPhongMaterial({ color, transparent: true, opacity, side: THREE.DoubleSide, shininess: 30,
+        specular: 0x202020, depthWrite: k === nk - 1, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
+      const mesh = new THREE.Mesh(sf.geom, mat);
+      mesh.renderOrder = 10 + (nk - 1 - k);       // innermost first
+      grp.add(mesh);
+    }
+  }
+  return grp;
+}
+function disposeGroup(g) {
+  g.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
+  g.parent?.remove(g);
+}
+// dashed sticks for distances (screen lines are one pixel wide, too thin at print resolution)
+function figureDistances(color) {
+  const grp = new THREE.Group(), mat = new THREE.MeshPhongMaterial({ color, shininess: 10 });
+  const up = new THREE.Vector3(0, 1, 0);
+  for (const d of S.distances) {
+    const A = S.mols.get(d.a.mol)?.xyz, B = S.mols.get(d.b.mol)?.xyz;
+    if (!A || !B) continue;
+    const pa = new THREE.Vector3(A[3*d.a.idx], A[3*d.a.idx+1], A[3*d.a.idx+2]);
+    const pb = new THREE.Vector3(B[3*d.b.idx], B[3*d.b.idx+1], B[3*d.b.idx+2]);
+    const len = pa.distanceTo(pb), dir = pb.clone().sub(pa).normalize(), q = new THREE.Quaternion().setFromUnitVectors(up, dir);
+    for (let t = 0.12; t < len - 0.12; t += 0.32) {
+      const l = Math.min(0.18, len - 0.12 - t);
+      const c = new THREE.Mesh(FIG.cyl, mat);
+      c.position.copy(pa).addScaledVector(dir, t + l / 2);
+      c.quaternion.copy(q);
+      c.scale.set(0.045, l, 0.045);
+      grp.add(c);
+    }
+  }
+  overlay.add(grp);
+  return grp;
+}
+function figureLabels(cam, W, H) {
+  const out = [], v = new THREE.Vector3();
+  const proj = (mol, i) => v.set(mol.xyz[3*i], mol.xyz[3*i+1], mol.xyz[3*i+2]).applyMatrix4(world.matrixWorld).project(cam);
+  const short = (mid, i) => {          // KCX201 OQ2 -> as in papers: residue name and number, the atom when it matters
+    const a = S.mols.get(mid).data.atoms[i];
+    const res = `${a[3]}${a[1]}${a[2] || ""}`;
+    const bb = ["CA", "N", "C", "O"].includes(a[4]) || a[3] === a[4] || ["HOH", "WAT"].includes(a[3]);
+    return (S.mols.size > 1 ? "" : "") + (bb ? res : `${res} ${a[4]}${a[5] ? ":" + a[5] : ""}`);
+  };
+  for (const k of S.labels.keys()) {
+    const [mid, idx] = k.split(":").map(Number), mol = S.mols.get(mid);
+    if (!mol) continue;
+    proj(mol, idx);
+    if (v.z < -1 || v.z > 1 || Math.abs(v.x) > 1 || Math.abs(v.y) > 1) continue;
+    out.push({ kind: "label", text: short(mid, idx), x: (v.x + 1) / 2 * W + 0.012 * W, y: (1 - v.y) / 2 * H });
+  }
+  for (const d of S.distances) {
+    const a = S.mols.get(d.a.mol), b = S.mols.get(d.b.mol);
+    if (!a || !b) continue;
+    const pa = proj(a, d.a.idx).clone(), pb = proj(b, d.b.idx).clone();
+    out.push({ kind: "distance", text: d.div.textContent, x: ((pa.x + pb.x) / 2 + 1) / 2 * W,
+      y: (1 - (pa.y + pb.y) / 2) / 2 * H + 0.03 * H });
+  }
+  return out;
+}
+function drawLabels(g, labels, fontPx, bg) {
+  g.font = `${fontPx}px Helvetica, Arial, sans-serif`;
+  g.textBaseline = "middle";
+  g.fillStyle = bg === "black" ? "#f2f2f2" : "#111111";
+  for (const lb of labels) { g.textAlign = lb.kind === "distance" ? "center" : "left"; g.fillText(lb.text, lb.x, lb.y); }
+}
+async function renderFigure(o) {
+  for (let t = 0; anim && t < 100; t++) await sleep(20);
+  const W = o.width, H = o.height, bg = o.background;
+  const maxDim = Math.min(renderer.capabilities.maxRenderbufferSize || 8192, 8192);
+  const ss = Math.max(1, Math.min(2, Math.floor(maxDim / Math.max(W, H))));
+  const RW = W * ss, RH = H * ss;
+  const cam = new THREE.OrthographicCamera(-o.half_w, o.half_w, o.half_h, -o.half_h, Math.max(0.1, S.zoom - S.slab), S.zoom + S.slab);
+  cam.position.set(0, 0, S.zoom);
+  cam.updateProjectionMatrix();
+  // ---- switch the scene to figure mode
+  const restore = [];
+  const swap = (obj, key, val) => { restore.push([obj, key, obj[key]]); obj[key] = val; };
+  updateCamera(); scene.updateMatrixWorld();
+  const bgColor = bg === "black" ? 0x000000 : 0xffffff;
+  swap(scene, "background", bg === "transparent" ? null : new THREE.Color(bgColor));
+  swap(scene.fog, "color", new THREE.Color(bgColor));
+  swap(scene.fog, "near", S.zoom - S.slab * 0.2);
+  swap(scene.fog, "far", S.zoom + S.slab * 1.6);
+  swap(crossObj, "visible", false);
+  for (const m of S.maps.values()) swap(m.obj, "visible", false);
+  if (SLICE.mesh && o.style !== "slice") swap(SLICE.mesh, "visible", false);
+  for (const d of S.distances) swap(d.line, "visible", false);
+  for (const mol of S.mols.values()) mol.group.traverse((x) => {
+    if (x.isInstancedMesh) {
+      if (x.geometry === sphereGeo) swap(x, "geometry", FIG.sphere);
+      else if (x.geometry === cylGeo) swap(x, "geometry", FIG.cyl);
+      if (x.material === solidMat) swap(x, "material", FIG.mat);
+    }
+  });
+  const lineScale = RW / Math.max(1, renderer.domElement.clientWidth) * 0.6;
+  for (const lm of lineMaterials) { swap(lm, "linewidth", lm.linewidth * lineScale); lm.resolution.set(RW, RH); }
+  const distGrp = figureDistances(bg === "black" ? 0xbfefff : 0x333333);
+  const rt = new THREE.WebGLRenderTarget(RW, RH, { samples: 4 });
+  const prevClear = renderer.getClearColor(new THREE.Color()), prevAlpha = renderer.getClearAlpha();
+  const shoot = () => {
+    if (o.style === "slice") updateSlice();
+    renderer.setRenderTarget(rt);
+    renderer.setClearColor(bgColor, bg === "transparent" ? 0 : 1);
+    renderer.clear();
+    renderer.render(scene, cam);
+    const px = new Uint8Array(RW * RH * 4);
+    renderer.readRenderTargetPixels(rt, 0, 0, RW, RH, px);
+    renderer.setRenderTarget(null);
+    const big = document.createElement("canvas");
+    big.width = RW; big.height = RH;
+    const img = new ImageData(RW, RH), row = RW * 4;
+    for (let y = 0; y < RH; y++) img.data.set(px.subarray((RH - 1 - y) * row, (RH - y) * row), y * row);   // flip
+    big.getContext("2d").putImageData(img, 0, 0);
+    const out = document.createElement("canvas");
+    out.width = W; out.height = H;
+    const g = out.getContext("2d");
+    g.imageSmoothingQuality = "high";
+    g.drawImage(big, 0, 0, W, H);
+    return out;
+  };
+  let figMaps = null, result;
+  try {
+    if (o.maps.length) { figMaps = await buildFigureMaps(o, true); world.add(figMaps); }
+    const plain = shoot();
+    const labels = figureLabels(cam, W, H);
+    const lab = document.createElement("canvas");
+    lab.width = W; lab.height = H;
+    const g = lab.getContext("2d");
+    g.drawImage(plain, 0, 0);
+    drawLabels(g, labels, o.font_px, bg);
+    result = { plain: plain.toDataURL("image/png"), png: lab.toDataURL("image/png"), labels, font_px: o.font_px,
+      carbon: Object.fromEntries([...S.mols.keys()].map((id) => [String(id), "#" + new THREE.Color(carbonColor(id)).getHexString()])) };
+    if (o.uncarved) {
+      disposeGroup(figMaps);
+      figMaps = await buildFigureMaps(o, false);
+      world.add(figMaps);
+      const u = shoot();
+      drawLabels(u.getContext("2d"), labels, o.font_px, bg);
+      result.uncarved = u.toDataURL("image/png");
+    }
+  } finally {
+    if (figMaps) disposeGroup(figMaps);
+    disposeGroup(distGrp);
+    rt.dispose();
+    for (let k = restore.length - 1; k >= 0; k--) { const [obj, key, val] = restore[k]; obj[key] = val; }
+    renderer.setClearColor(prevClear, prevAlpha);
+    resize();
+    redraw();
+  }
+  return result;
+}
 
 // ------------------------------------------------------------------- map slices
 // As in shared pages: the map drawn on a plane (green +, red -; the map colour for density maps; brighter towards

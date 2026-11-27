@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0 (unreleased)
+
+- **Publication figures:** *Figure…* button and `figure` command: the current view at journal size (89/120/183 mm or
+  16:9; 300/600 dpi), orthographic, maps as nested transparent surfaces (1, 1.5, 2.25 × level; weaker more transparent),
+  carved to the shown atoms with an uncarved companion and a warning when carving hides density, labels as editable SVG
+  text, settings JSON and a draft legend. `figure_tour` makes one figure per tour stop; `pymol=true` writes a PyMOL
+  script with the same view, levels and carving. Colour-blind-safe palette (`palette=cvd`).
+
 ## 0.3.0
 
 ### Shareable pages (`moorlight share`, by @HatPdotS, PR #4)

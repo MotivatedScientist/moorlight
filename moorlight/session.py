@@ -327,6 +327,141 @@ class Session:
             fh.write(png)
         return p
 
+    # ============================================================= figures
+    @command("Publication figure of the current view: maps as nested transparent surfaces (weaker levels more "
+             "transparent), cut to the shown atoms (carve), on white, orthographic, at journal size. Writes <name>.png "
+             "(labels drawn in), <name>_plain.png, <name>.svg (labels as editable text), <name>_uncarved.png, "
+             "<name>.json (to make it again) and <name>_legend.md (draft legend with levels and carving); "
+             "pymol=true adds a PyMOL script with the same view. Returns the paths and warnings, e.g. density that "
+             "carving hides.",
+             {"name": ("string", "file name stem (default: figure_<time>, or the tour stop's name)"),
+              "preset": ("string", "single (89 mm, default), one-and-half (120 mm), double (183 mm), slide (16:9)"),
+              "width_mm": ("number", "width in mm (overrides the preset)"),
+              "aspect": ("number", "width / height (default: as on screen; slide: 16/9)"),
+              "dpi": ("integer", "dots per inch (default 300)"),
+              "background": ("string", "white (default), black or transparent"),
+              "style": ("string", "surfaces (default), slice (the current slice plane) or none (no maps)"),
+              "maps": ("array", "map ids (default: the visible maps)"),
+              "levels": ("array", "sigma levels for every map (default: each map's level x 1, 1.5, 2.25)"),
+              "carve": ("number", "show density within this many Å of the shown atoms (default 2; 0: no carving)"),
+              "uncarved": ("boolean", "also write the uncarved image (default true when carving)"),
+              "palette": ("string", "standard (green/red) or cvd (blue/orange, readable with red-green colour blindness)"),
+              "font_pt": ("number", "label size in points (default 7)"),
+              "title": ("string", "figure title for the legend"),
+              "text": ("string", "what the figure shows, for the legend (default: the tour stop's text)"),
+              "out_dir": ("string", "folder (default <workdir>/figures)"),
+              "pymol": ("boolean", "also write a PyMOL script and cut maps")}, view_only=True)
+    def figure(self, name=None, preset="single", width_mm=None, aspect=None, dpi=300, background="white",
+               style="surfaces", maps=None, levels=None, carve=2.0, uncarved=None, palette="standard", font_pt=7.0,
+               title=None, text=None, out_dir=None, pymol=False):
+        from . import figure as F
+        if preset not in F.PRESETS:
+            raise ValueError(f"preset: one of {list(F.PRESETS)}")
+        if style not in ("surfaces", "slice", "none"):
+            raise ValueError("style: surfaces, slice or none")
+        if background not in ("white", "black", "transparent"):
+            raise ValueError("background: white, black or transparent")
+        if palette not in F.PALETTES:
+            raise ValueError(f"palette: one of {list(F.PALETTES)}")
+        try:
+            v = self.ask_client("view_request", {}, timeout=5)
+        except Exception as e:
+            raise RuntimeError(f"figure needs the viewer open in a browser tab ({e})") from None
+        self.view.update({k: v[k] for k in ("center", "orient", "zoom", "slab") if k in v})
+        screen_aspect = float(v.get("aspect") or 1.0)
+        w_mm = float(width_mm or F.PRESETS[preset][0])
+        asp = float(aspect or F.PRESETS[preset][1] or min(2.5, max(0.5, screen_aspect)))
+        dpi = int(dpi)
+        W = int(round(w_mm / 25.4 * dpi))
+        H = int(round(W / asp))
+        center = np.asarray(v["center"], dtype=float)
+        axes = F.view_axes(v.get("orient"))
+        slab = float(v.get("slab") or 10)
+        half_w, half_h = F.frame(v, W / H, screen_aspect)
+        atoms, _ = F.shown_atoms(self, center, axes, half_w, half_h, slab)
+        carve = float(carve or 0)
+        if uncarved is None:
+            uncarved = carve > 0
+        stop = self.tour["stops"][self.tour_index] if self.tour["stops"] and 0 <= self.tour_index < len(self.tour["stops"]) else None
+        at_stop = stop is not None and np.linalg.norm(np.asarray(stop["view"].get("center") or [1e9] * 3) - center) < 0.5
+        if text is None and at_stop:
+            text = stop.get("text", "")
+        if title is None and at_stop:
+            title = stop.get("name", "")
+        name = F.slug(name or (title if at_stop else None) or time.strftime("figure_%Y%m%d_%H%M%S"))
+        xs = [] if style != "surfaces" else self.map_list(maps) if maps else [x for x in self.maps.values() if x.visible]
+        map_levels = []
+        for x in xs:
+            lv = [float(l) for l in levels] if levels else [round(x.level_sigma * k, 2) for k in F.LEVEL_STEPS]
+            map_levels.append((x, lv))
+        radius = float(min(25.0, max(half_w, half_h, slab) + 1.5))
+        self._figure_job = {"center": center.tolist(), "radius": radius, "carve_xyz": atoms, "carve": carve,
+                            "levels": {x.id: lv for x, lv in map_levels}}
+        cols = F.PALETTES[palette]
+        payload = {"width": W, "height": H, "background": background, "style": style, "half_w": half_w,
+                   "half_h": half_h, "font_px": font_pt / 72 * dpi, "uncarved": bool(uncarved and carve > 0 and map_levels),
+                   "maps": [{"id": x.id, "kind": x.kind, "levels": lv,
+                             "colors": [cols["pos"], cols["neg"]] if x.kind == "diff" else [x.color],
+                             "opacity": list(F.OPACITY)} for x, lv in map_levels]}
+        res = self.ask_client("figure_request", payload, timeout=300)
+        if not isinstance(res, dict) or "png" not in res:
+            raise RuntimeError(f"figure failed: {res}")
+        carbon = res.get("carbon", {})
+        spec = {"name": name, "title": title or "", "text": text or "", "preset": preset, "size_mm": [w_mm, w_mm / asp],
+                "size_px": [W, H], "dpi": dpi, "background": background, "style": style, "palette": palette,
+                "carve": carve, "uncarved": bool(payload["uncarved"]), "center": center.tolist(), "orient": v.get("orient"),
+                "zoom": v.get("zoom"), "slab": slab, "carbon": carbon,
+                "maps": [{"id": x.id, "name": x.name, "kind": x.kind, "levels": lv, "source": x.source,
+                          "f": x.f, "phi": x.phi} for x, lv in map_levels],
+                "models": [{"id": m.id, "name": m.name, "path": m.path} for m in self.molecules.values() if m.visible],
+                "distances": bool(any(lb.get("kind") == "distance" for lb in res.get("labels", []))),
+                "view": self._snapshot()}
+        d = self._path(out_dir) if out_dir else os.path.join(self.workdir, "figures")
+        paths = F.write_files(d, name, {**res, "width": W, "height": H}, spec)
+        maps_info = [{"name": x.name, "kind": x.kind, "levels": lv, "source": x.source, "rms": x.rms,
+                      "resolution": round(x.resolution, 2) if x.resolution else None} for x, lv in map_levels]
+        models_info = [{"name": m.name, "carbon": carbon.get(str(m.id), "?")} for m in self.molecules.values() if m.visible]
+        with open(os.path.join(d, name + "_legend.md"), "w") as fh:
+            fh.write(F.legend(spec, maps_info, models_info))
+        paths["legend"] = os.path.join(d, name + "_legend.md")
+        warnings = []
+        if carve > 0:
+            for x, lv in map_levels:
+                hid = F.hidden_by_carving(x, center, axes, half_w, half_h, slab, atoms, carve)
+                if hid and abs(hid[0]) >= min(lv):
+                    see = f"see {name}_uncarved.png" if payload["uncarved"] else "make it with uncarved=true to see it"
+                    warnings.append(f"map {x.name!r}: carving hides {hid[0]:+.1f} σ at {hid[1]}, more than {carve:g} Å "
+                                    f"from the shown atoms ({see})")
+        if pymol:
+            paths["pymol"] = F.pymol_script(self, d, name, spec, map_levels, half_w, half_h)
+        self.say(f"figure {name}: {W}×{H} px ({w_mm:g} mm at {dpi} dpi) in {d}")
+        return {"files": paths, "size_px": [W, H], "size_mm": [round(w_mm, 1), round(w_mm / asp, 1)],
+                "maps": [{"name": x.name, "levels": lv} for x, lv in map_levels], "warnings": warnings}
+
+    @command("Publication figures of every stop of the current tour (see figure): one set of files per stop, named "
+             "after the stop, with its text in the legend, plus figures.md with all legends in order. Takes the "
+             "options of figure.",
+             {"out_dir": ("string", "folder (default <workdir>/figures/<tour title>)"),
+              "options": ("object", "options passed to figure for every stop (preset, dpi, carve, ...)")}, view_only=True)
+    def figure_tour(self, out_dir=None, options=None):
+        from . import figure as F
+        if not self.tour["stops"]:
+            raise ValueError("no tour loaded (tour_load) or built (tour_add)")
+        d = self._path(out_dir) if out_dir else os.path.join(self.workdir, "figures", F.slug(self.tour["title"], "tour"))
+        opts = {k: v for k, v in (options or {}).items() if k not in ("out_dir", "name", "title", "text")}
+        out, legends = [], [f"# {self.tour['title'] or 'Figures'}\n"]
+        for i, st in enumerate(self.tour["stops"]):
+            self.tour_goto(index=i)
+            time.sleep(0.6)
+            nm = f"fig{i + 1:02d}_{F.slug(st.get('name'), 'stop')}"
+            r = self.figure(name=nm, title=st.get("name", ""), text=st.get("text", ""), out_dir=d, **opts)
+            out.append({"stop": st.get("name"), **r})
+            with open(r["files"]["legend"]) as fh:
+                legends.append(f"## Figure {i + 1}: {st.get('name', '')}\n\n" + fh.read())
+        with open(os.path.join(d, "figures.md"), "w") as fh:
+            fh.write("\n".join(legends))
+        return {"folder": d, "figures": out}
+
     # ============================================================== loading
     @command("Load a model (PDB or mmCIF).", {"path": ("string", "file path")})
     def load_model(self, path):

@@ -69,6 +69,17 @@ with one clear statement. The user drives the pace.
    `tour_save path=…` writes a tour file that the user and co-reviewers can step through with ◀ ▶ without an agent (`tour_load`).
 6. **Stop and ask** whether to continue. Offer the next stop by name. Do not run the whole tour unprompted.
 
+## Turning the tour into figures
+
+When the user wants figures (for a manuscript, a talk), each stop becomes one: `figure_tour` writes one figure per stop
+(PNG, SVG with editable labels, draft legend from the stop's text), or `figure` for the current view. Before that:
+- Label only what the text names (`label_atoms`), add the distances it quotes (`show_distance`), and frame tightly
+  (`frame_atoms`, small slab): a figure carries less than a screen.
+- Keep the same orientation and levels across stops that are compared (time points, data sets), and say so in the legend.
+- Read the warnings: carving can hide density. If it does, look at `<name>_uncarved.png` and either widen `carve` or
+  mention it in the legend.
+- Show the user the PNG (Read it) and the legend draft; they edit the text, you do not invent findings for it.
+
 ## Things to be careful about
 
 - **Do not trust residue classifiers blindly.** Labels such as "shift-like" / "disorder-like" come from rules that can average over conformers. If the map

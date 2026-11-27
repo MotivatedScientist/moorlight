@@ -39,6 +39,13 @@ moorlight dark.pdb dark.mtz:dark light.mtz:light   # file.mtz:label names the ma
   levels, labels and distances) plus a short text. Claude builds one with `tour_add` and `tour_save`. You can step through it
   with ◀ ▶ in the Display tab, and share it as a JSON file: `tour_load` opens the models and maps it needs. Single views can
   be saved with `save_view` / `restore_view`.
+- **Publication figures.** *Figure…* (or the `figure` command) renders the current view at journal size (89, 120 or 183 mm,
+  or a 16:9 slide; 300 or 600 dpi): orthographic, on white, maps as nested transparent surfaces at 1, 1.5 and 2.25 × the
+  map's level (weaker levels more transparent), cut to within 2 Å of the shown atoms. It writes `figures/<name>.png`, a
+  plain PNG, an SVG with the labels as editable text, `<name>_uncarved.png`, the settings (`<name>.json`) and a draft
+  legend with maps, levels, resolution and carving. It warns when carving hides density stronger than the lowest level.
+  `figure_tour` makes one figure per tour stop, named after the stop, with the stop's text in its legend; `pymol=true`
+  writes a PyMOL script with the same view, levels and carving.
 - **Claude tab.** A chat running headless Claude Code with every viewer command as a tool. Each message carries your current view (visible maps and levels, centre, selected atoms), so "this map" means what you're looking at. Claude can take screenshots of the view. The *shell* box lets it run commands such as TorchRef refinements; it's off by default.
 
 Press `?` in the viewer for keys and mouse controls.
@@ -93,6 +100,7 @@ Underneath is a small HTTP API:
 - **Slices:** `slice` (style `slice`/`mesh`, `atoms=[...]` for a plane through atoms, `fix`, `depth`, `thickness`, `map_id`)
   returns where the plane is and its strongest positive and negative values with the nearest atoms. Saved views and tour
   stops keep the slice.
+- **Figures:** `figure` (preset, dpi, background, style, levels, carve, palette `cvd`, pymol) and `figure_tour`.
 - **Screenshots:** `screenshot` waits until the view has settled and its map contours are computed. It takes `width`, `crop` and `path`.
 
 ## Claude skill: guided result tours

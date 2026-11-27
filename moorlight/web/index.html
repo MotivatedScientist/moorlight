@@ -38,6 +38,7 @@
     <button id="btn-redo" title="Redo (Ctrl-Shift-Z)">↷ Redo</button>
     <button id="btn-save">Save</button>
     <button id="btn-open">Open…</button>
+    <button id="btn-figure" title="Publication figure of this view">Figure…</button>
     <button id="btn-help" title="Keys and mouse (?)">?</button>
   </div>
   <div id="main">
@@ -123,6 +124,25 @@
     </div>
   </div>
   <div id="status">Ready</div>
+</div>
+<div id="figure-dlg" class="hidden">
+  <form id="figure-form">
+    <h2>Publication figure</h2>
+    <p class="hint">This view, on white, orthographic; maps as nested surfaces (weaker levels more transparent), cut to the
+      shown atoms. Files go to <code>figures/</code>: PNG, SVG with editable labels, draft legend, settings.</p>
+    <label>Name <input name="name" placeholder="from the tour stop, or figure_&lt;time&gt;"></label>
+    <label>Size <select name="preset"><option value="single">single column, 89 mm</option>
+      <option value="one-and-half">1.5 column, 120 mm</option><option value="double">double column, 183 mm</option>
+      <option value="slide">slide, 16:9</option></select></label>
+    <label>Resolution <select name="dpi"><option>300</option><option>600</option><option>150</option></select> dpi</label>
+    <label>Background <select name="background"><option>white</option><option>black</option><option>transparent</option></select></label>
+    <label>Maps as <select name="style"><option value="surfaces">nested surfaces</option><option value="slice">the slice plane</option>
+      <option value="none">no maps</option></select></label>
+    <label>Carve <input name="carve" type="number" value="2" step="0.5" min="0" style="width:60px"> Å around the shown atoms (0: off)</label>
+    <label>Colours <select name="palette"><option value="standard">green / red</option><option value="cvd">blue / orange (colour-blind safe)</option></select></label>
+    <label><input type="checkbox" name="pymol"> also a PyMOL script with the same view</label>
+    <div class="row"><button type="submit" id="figure-go">Make figure</button><button type="button" id="figure-cancel">Cancel</button></div>
+  </form>
 </div>
 <div id="help" class="hidden">
   <h2>Mouse &amp; keys (Coot 0.9 style)</h2>

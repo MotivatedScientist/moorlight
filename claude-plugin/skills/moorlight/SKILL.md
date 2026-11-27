@@ -67,6 +67,8 @@ What the commands cover:
   + and − value on the plane with the nearest atoms.
 - **Measuring:** `density_at_atoms`, `density_profile`, `density_at_point`, `distance`, `peaks` (with whole-cell rank),
   `map_correlation`, `ligands`.
+- **Figures:** `figure` (current view at journal size, nested map surfaces, carved, SVG labels, legend draft, optional
+  PyMOL script), `figure_tour` (one per tour stop).
 - **Building and refinement:** `refine` (map, difference-map or both targets), `accept_refinement` / `reject_refinement`,
   `fix_atoms`, `add_altconf`, `rotamers` / `set_rotamer`, `mutate`, `flip_peptide`, `add_water`, `add_ion`, `find_waters`,
   `add_ligand`, `add_residue`, `renumber`, `delete`, `set_occupancy`, `set_bfactor`, `undo` / `redo`, `save_model`.

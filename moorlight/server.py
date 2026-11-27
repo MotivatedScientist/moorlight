@@ -141,6 +141,25 @@ class App:
         body = len(head).to_bytes(4, "little") + head + arr.astype("<f4").tobytes()
         return web.Response(body=body, content_type="application/octet-stream")
 
+    async def figure_surfaces(self, request):
+        """Nested surfaces of one map for the figure being made (session._figure_job): u32 header length, JSON header
+        {surfaces: [{sign, level, nverts, nfaces}]} padded to 4 bytes, then per surface f32 vertices, f32 normals,
+        u32 faces."""
+        job = getattr(self.s, "_figure_job", None)
+        x = self.s.maps.get(int(request.query["map"]))
+        if job is None or x is None:
+            raise web.HTTPNotFound()
+        carved = request.query.get("carved", "1") == "1"
+        surfs = await asyncio.to_thread(x.surfaces, job["center"], job["radius"], job["levels"].get(x.id, [x.level_sigma]),
+                                        job["carve_xyz"] if carved else None, job["carve"] if carved else None)
+        head = dumps({"map": x.id, "surfaces": [{"sign": sg, "level": lv, "nverts": len(v), "nfaces": len(f)}
+                                                for sg, lv, v, n, f in surfs]}).encode()
+        head += b" " * (-len(head) % 4)
+        parts = [len(head).to_bytes(4, "little"), head]
+        for sg, lv, v, n, f in surfs:
+            parts += [v.astype("<f4").tobytes(), n.astype("<f4").tobytes(), f.astype("<u4").tobytes()]
+        return web.Response(body=b"".join(parts), content_type="application/octet-stream")
+
     async def ws(self, request):
         ws = web.WebSocketResponse(max_msg_size=64 * 1024 * 1024)
         await ws.prepare(request)
@@ -210,6 +229,7 @@ class App:
         app.router.add_get("/api/state", self.full_state)
         app.router.add_get("/api/map/{id}/mesh", self.mesh)
         app.router.add_get("/api/map/{id}/box", self.box)
+        app.router.add_get("/api/figure/surfaces", self.figure_surfaces)
         app.router.add_get("/ws", self.ws)
         app.router.add_static("/static", WEB)
 

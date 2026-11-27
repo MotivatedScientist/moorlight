@@ -387,19 +387,21 @@ class Session:
               "pymol": ("boolean", "also write a PyMOL script and cut maps"),
               "look": ("boolean", "figure look (default true): only for the render, main chain of stick models as "
                                   "cartoon and only residues near the labelled atoms (or the centre); off: as on screen"),
-              "look_radius": ("number", "Å around the labelled atoms for the figure look (default 5)")}, view_only=True)
+              "look_radius": ("number", "Å around the labelled atoms for the figure look (default 5)"),
+              "opacity": ("array", "surface opacities, outer (weakest level) to inner, e.g. [0.1, 0.2, 0.3] (default: "
+                                   "density maps 0.12, 0.2, 0.32; difference maps 0.22, 0.38, 0.6)")}, view_only=True)
     def figure(self, name=None, preset="single", width_mm=None, aspect=None, dpi=300, background="white",
                style="surfaces", maps=None, levels=None, carve=2.0, uncarved=None, palette="standard", font_pt=7.0,
-               title=None, text=None, out_dir=None, pymol=False, look=True, look_radius=5.0, remember=True):
+               title=None, text=None, out_dir=None, pymol=False, look=True, look_radius=5.0, remember=True, opacity=None):
         """look: only while rendering, draw the main chain of stick models as cartoon and only residues within
         look_radius of the labelled atoms (or of the centre); the view is restored afterwards."""
         if self.preview is not None:          # figure preview on: the look is already applied
             return self._figure(name, preset, width_mm, aspect, dpi, background, style, maps, levels, carve, uncarved,
-                                palette, font_pt, title, text, out_dir, pymol, self.preview["note"], remember)
+                                palette, font_pt, title, text, out_dir, pymol, self.preview["note"], remember, opacity)
         saved, note = self._apply_look(look_radius) if look else ({}, None)
         try:
             return self._figure(name, preset, width_mm, aspect, dpi, background, style, maps, levels, carve, uncarved,
-                                palette, font_pt, title, text, out_dir, pymol, note, remember)
+                                palette, font_pt, title, text, out_dir, pymol, note, remember, opacity)
         finally:
             self._restore_look(saved)
 
@@ -456,7 +458,7 @@ class Session:
         return {"preview": bool(on), **({"look": self.preview["note"]} if on else {})}
 
     def _figure(self, name, preset, width_mm, aspect, dpi, background, style, maps, levels, carve, uncarved, palette,
-                font_pt, title, text, out_dir, pymol, look_note, remember=True):
+                font_pt, title, text, out_dir, pymol, look_note, remember=True, opacity=None):
         from . import figure as F
         if preset not in F.PRESETS:
             raise ValueError(f"preset: one of {list(F.PRESETS)}")
@@ -505,14 +507,14 @@ class Session:
                    "half_h": half_h, "font_px": font_pt / 72 * dpi, "uncarved": bool(uncarved and carve > 0 and map_levels),
                    "maps": [{"id": x.id, "kind": x.kind, "levels": lv,
                              "colors": [cols["pos"], cols["neg"]] if x.kind == "diff" else [x.color],
-                             "opacity": list(F.OPACITY)} for x, lv in map_levels]}
+                             "opacity": F.opacities(x.kind, len(lv), opacity)} for x, lv in map_levels]}
         res = self.ask_client("figure_request", payload, timeout=300)
         if not isinstance(res, dict) or "png" not in res:
             raise RuntimeError(f"figure failed: {res}")
         carbon = res.get("carbon", {})
         spec = {"name": name, "title": title or "", "text": text or "", "preset": preset, "size_mm": [w_mm, w_mm / asp],
                 "size_px": [W, H], "dpi": dpi, "background": background, "style": style, "palette": palette,
-                "carve": carve, "uncarved": bool(payload["uncarved"]), "center": center.tolist(), "orient": v.get("orient"),
+                "carve": carve, "uncarved": bool(payload["uncarved"]), "opacity": opacity, "center": center.tolist(), "orient": v.get("orient"),
                 "zoom": v.get("zoom"), "slab": slab, "carbon": carbon,
                 "maps": [{"id": x.id, "name": x.name, "kind": x.kind, "levels": lv, "source": x.source,
                           "f": x.f, "phi": x.phi} for x, lv in map_levels],

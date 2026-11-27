@@ -26,7 +26,15 @@ PRESETS = {                                  # width in mm, aspect (None: as on 
     "single": (89.0, None), "one-and-half": (120.0, None), "double": (183.0, None), "slide": (254.0, 16 / 9),
 }
 LEVEL_STEPS = (1.0, 1.5, 2.25)               # nested surfaces at these multiples of the map's level
-OPACITY = (0.22, 0.38, 0.6)                  # outer (weak) to inner (strong)
+# opacity of the nested surfaces, outer (weak) to inner (strong). Density maps are lighter: where all three overlap
+# they reach 1 - 0.88 * 0.80 * 0.68 = 0.52, so the model inside stays visible.
+OPACITY = {"diff": (0.22, 0.38, 0.6), "2fofc": (0.12, 0.2, 0.32)}
+
+
+def opacities(kind, n, custom=None):
+    """n opacities (outer to inner) for a map kind; custom: a list to use instead."""
+    base = list(custom) if custom else list(OPACITY.get(kind, OPACITY["2fofc"]))
+    return [base[min(len(base) - 1, round(k * (len(base) - 1) / max(1, n - 1)))] for k in range(n)]
 PALETTES = {
     "standard": {"pos": "#1fa01f", "neg": "#d42020"},
     "cvd": {"pos": "#0072b2", "neg": "#e69f00"},     # Okabe-Ito blue / orange, readable with red-green colour blindness
@@ -208,14 +216,15 @@ def pymol_script(session, out_dir, name, spec, maps, half_w, half_h):
         carve = f", carve={spec['carve']:g}" if spec.get("carve") else ""
         sel = " or ".join(sel_parts) or "all"
         cols = PALETTES[spec["palette"]]
-        for k, lv in enumerate(levels):
+        ops = opacities(x.kind, len(levels), spec.get("opacity"))
+        for k, lv in enumerate(sorted(levels)):
             for sign in ((1, -1) if x.kind == "diff" else (1,)):
                 absl = x.mean + sign * lv * x.rms
                 obj = f"{mobj}_{'p' if sign > 0 else 'n'}{k}"
                 col = (cols["pos"] if sign > 0 else cols["neg"]) if x.kind == "diff" else x.color
                 lines += [f"isosurface {obj}, {mobj}, {absl:.6g}, ({sel}){carve}",
                           f"color {col.replace('#', '0x')}, {obj}",
-                          f"set transparency, {1 - OPACITY[min(k, len(OPACITY) - 1)]:.2f}, {obj}"]
+                          f"set transparency, {1 - ops[k]:.2f}, {obj}"]
     # view: PyMOL's matrix is column-major model-to-camera rotation, then camera position, origin, clipping
     R = view_axes(spec["orient"])
     dist = half_h / np.tan(np.radians(FOV / 2))

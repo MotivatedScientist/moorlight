@@ -10,6 +10,8 @@
 - Figure labels placed automatically off the atoms (avoiding labels, atoms and edges), paper-style text, leader lines.
 - `cartoon` molecule style (main chain as a tube, side chains from Cα); metal coordination drawn as dashes.
 - `show_distance style=hbond` and `show_hbonds`; `show_zone` draws only residues near given atoms.
+- Lighter density surfaces in figures (opacities 0.12, 0.2, 0.32: at most 0.52 where all three overlap); `opacity`
+  sets them per figure. Difference maps keep 0.22, 0.38, 0.6.
 - Figure folder: *Folder* in the Figure dialog or `set_figure_dir`; remembered for the data, used by every figure and
   tour export (a subfolder per tour).
 - *Preview* toggle (`figure_preview`): the viewer as the figure will look; maps stay mesh until the render.

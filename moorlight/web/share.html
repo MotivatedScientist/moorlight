@@ -57,6 +57,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
   overflow-wrap: anywhere; white-space: pre-line; }
 #loading { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted);
   font: 14px var(--font-data); }
+#loading[hidden] { display: none; }   /* display: grid would beat the hidden attribute and block all input */
 
 #panel { min-width: 0; max-height: 44vh; max-height: 44dvh; overflow-y: auto; overscroll-behavior: contain;
   display: flex; flex-direction: column; gap: 14px; padding-block: 12px 16px;
@@ -238,6 +239,7 @@ kbd { font: 0.8rem var(--font-data); }
         <button type="button" data-style="mesh" aria-pressed="true">Mesh</button>
         <button type="button" data-style="slice" aria-pressed="false">Slice</button>
       </div>
+      <p class="hint slice-only">The live plane faces you and follows the view; Fix plane locks it to the molecule.</p>
       <div class="slice-only slice-box">
         <div class="ctl-row">
           <label for="slice-depth">Depth</label>

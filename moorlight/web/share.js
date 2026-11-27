@@ -1136,9 +1136,12 @@ function applyView() {
   syncDepthRange();
   S.depth = 0;
   const q = s.orient ? new THREE.Quaternion(...s.orient) : null;
+  if (s.style) setStyle(s.style);        // the author's choice (--slice / --open-plane) wins over the remembered one
   animateTo(new THREE.Vector3(...s.center), q);
+  const pi = s.plane ? S.planes.findIndex((pl) => pl.name === s.plane) : -1;
+  if (pi >= 0) goToPlane(pi);
   scheduleContour(true);
-  status("");
+  if (pi < 0) status(S.planes.length && S.style !== "slice" ? `${S.planes.length} plane${S.planes.length > 1 ? "s" : ""}: choose Slice to see ${S.planes.length > 1 ? "them" : "it"}` : "");
 }
 
 // ------------------------------------------------------------------- about

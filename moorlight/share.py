@@ -390,7 +390,8 @@ def read_map(spec, base):
         if spec.get("columns"):
             f, phi = [c.strip() for c in spec["columns"].split(",")[:2]]
             check_columns(mtz, f, phi)
-            kind = guess_kind(f)
+            # a label we know (DELFWT, FWT, ...) gives the kind; others (FDDCAT) are left to the values
+            kind = guess_kind(f) if guess_kind(f) == "diff" or _density_label(f) else None
         else:
             found = detect_columns(mtz)
             if not found:
@@ -399,6 +400,12 @@ def read_map(spec, base):
         sample = float(spec.get("sample_rate", 3.0))
         return map_from_mtz(mtz, f, phi, sample), spec.get("kind", kind)
     raise ValueError(f"{p}: unknown map format (use .ccp4/.map/.mrc or .mtz)")
+
+
+def _density_label(f):
+    up = f.upper()
+    return up.startswith(("2", "FWT", "FEXT", "F-MODEL", "FMODEL")) or \
+        up in ("F", "FO", "FP", "FOBS", "FC", "FCALC", "FC_ALL", "FWT_FILL")
 
 
 def guess_map_kind(path, values):
@@ -726,6 +733,13 @@ class Share:
                "_center_spec": s["center"], "_plane": plane}
         if "contour_radius" in s:
             out["contour_radius"] = float(s["contour_radius"])
+        if s.get("style") in ("mesh", "slice"):
+            out["style"] = s["style"]
+        if s.get("plane"):
+            names = [pl["name"] for pl in self.spec.get("planes") or []]
+            if s["plane"] not in names:
+                raise ValueError(f"{where}: plane {s['plane']!r}: no such plane; planes: {names}")
+            out["plane"], out["style"] = s["plane"], "slice"
         return out
 
     def _drawn(self):
@@ -1306,9 +1320,13 @@ def _map_entries(path, name, base):
     stem = os.path.splitext(os.path.basename(path))[0]
     if not path.lower().endswith(".mtz"):
         return [{"path": path, "name": name or stem}]
-    if ":" in name:                                  # file.mtz=name:F,PHI
+    if ":" in name:                                  # file.mtz=name:F,PHI or name:F,PHI,diff
         name, _, cols = name.partition(":")
-        return [{"path": path, "columns": cols, "name": name or stem}]
+        parts = [c.strip() for c in cols.split(",")]
+        e = {"path": path, "columns": ",".join(parts[:2]), "name": name or stem}
+        if len(parts) > 2 and parts[2]:
+            e["kind"] = _kind_word(parts[2], f"{path}={name}:{cols}")
+        return [e]
     found = detect_columns(gemmi.read_mtz_file(_path(path, base)))
     if not found:
         raise ValueError(f"{path}: no map columns found; give them as {path}=name:F,PHI")
@@ -1316,6 +1334,13 @@ def _map_entries(path, name, base):
     return [{"path": path, "columns": f"{f},{phi}", "kind": kind,
              "name": (f"{name} {label}" if len(shown) > 1 else name) if name else label}
             for f, phi, kind, label in shown]
+
+
+def _kind_word(w, where):
+    k = {"diff": "diff", "difference": "diff", "2fofc": "2fofc", "density": "2fofc", "em": "2fofc"}.get(w.lower())
+    if k is None:
+        raise ValueError(f"{where}: map kind {w!r}: use diff or density")
+    return k
 
 
 def _residue_spec(sh, k, i, atom=False):
@@ -1476,7 +1501,8 @@ def _is_primary_density(name):
 
 
 def init_spec(models, maps, title=None, units="sigma", unit_label=None, level=None, min_peak=None, n_planes=None,
-              planes=(), base=".", description="", center=None, radius=None, drop=(), cache=None, around=None):
+              planes=(), base=".", description="", center=None, radius=None, drop=(), cache=None, around=None,
+              kinds=None, soft_kinds=None):
     """A ready-to-build spec from files: a starting view of the whole structure and preset slice planes.
 
     Planes: the requested ones ('NAME=SPEC, SPEC, ...'), then up to n_planes automatic ones (default 5, or 0 when
@@ -1503,6 +1529,13 @@ def init_spec(models, maps, title=None, units="sigma", unit_label=None, level=No
     for d in drop:
         gone = _match_map([e["name"] for e in entries], d)
         entries = [e for e in entries if e["name"] != gone]
+    for n, k in (soft_kinds or {}).items():          # kinds a previous spec held (also edited by hand): kept
+        for e in entries:
+            if e["name"] == n:
+                e["kind"] = k
+    for n, k in (kinds or {}).items():               # --diff / --density
+        name = _match_map([e["name"] for e in entries], n)
+        next(e for e in entries if e["name"] == name)["kind"] = k
     spec["maps"] = entries
     sh = Share(spec, base, cache)
     any_diff = any(x.kind == "diff" for x in sh.maps)
@@ -1806,7 +1839,7 @@ def _spec_args(argv):
     return fixed
 
 
-def build_main(argv, prog="moorlight-share"):
+def build_main(argv, prog="moorlight-share", soft_kinds=None):
     ap = argparse.ArgumentParser(prog=prog, description=
                                  "Build a viewer page from model and map files in one command, and print what it "
                                  "shows. Atom specs: 'A/85 CA', 'A/85' (residue), '2#A/85 SG' (model 2), or a residue "
@@ -1832,6 +1865,8 @@ def build_main(argv, prog="moorlight-share"):
                          "perpendicular-to=PLANE (then the atoms give a line in the plane)  map=NAME  level=4")
     ap.add_argument("--no-plane", action="append", default=[], metavar="NAME", help="remove a plane given earlier")
     ap.add_argument("--planes", type=int, help="automatic planes when no --plane is given (default 5)")
+    ap.add_argument("--slice", action="store_true", help="open the page in Slice mode (planes are drawn only there)")
+    ap.add_argument("--open-plane", metavar="NAME", help="open the page on this plane, in Slice mode")
     ap.add_argument("--around", type=float, metavar="R", help="store the maps only within about R A of the "
                                                                "starting centre (much smaller files; e.g. 15)")
     ap.add_argument("--label", action="append", default=[], metavar="SPECS", help="atoms to label (comma-separated)")
@@ -1841,6 +1876,9 @@ def build_main(argv, prog="moorlight-share"):
     ap.add_argument("--show", action="append", default=[], metavar="MAP", help="show this map at the start")
     ap.add_argument("--hide", action="append", default=[], metavar="MAP", help="hide this map at the start")
     ap.add_argument("--drop", action="append", default=[], metavar="MAP", help="leave this map out of the page")
+    ap.add_argument("--diff", action="append", default=[], metavar="MAP",
+                    help="treat this map as a difference map (signed; shown at +/- level). Also file.mtz=name:F,PHI,diff")
+    ap.add_argument("--density", action="append", default=[], metavar="MAP", help="treat this map as a density map")
     ap.add_argument("--level", action="append", default=[], metavar="[MAP=]LEVEL",
                     help="contour level: LEVEL for the difference maps, MAP=LEVEL for one map (repeatable)")
     ap.add_argument("--units", choices=["sigma", "absolute"], default="sigma",
@@ -1885,7 +1923,8 @@ def build_main(argv, prog="moorlight-share"):
         cache = {}
         spec = init_spec(models, maps, a.title, a.units, a.unit_label, diff_level[-1] if diff_level else None,
                          a.min_peak, a.planes, list(planes.values()), out_dir, a.description, a.center, a.radius,
-                         a.drop, cache, a.around)
+                         a.drop, cache, a.around, {**{n: "diff" for n in a.diff}, **{n: "2fofc" for n in a.density}},
+                         soft_kinds)
         if a.around:
             spec["region"] = {"center": spec["view"]["center"], "radius": a.around}
             sh0 = Share({**spec, "maps": [], "planes": []}, out_dir, cache)
@@ -1905,6 +1944,11 @@ def build_main(argv, prog="moorlight-share"):
         for n in a.hide:
             spec["maps"][names.index(_match_map(names, n))]["visible"] = False
         view = spec["view"]
+        if a.slice:
+            view["style"] = "slice"
+        if a.open_plane:
+            names = [pl["name"] for pl in spec["planes"]]
+            view["plane"] = _match_map(names, a.open_plane) if names else a.open_plane
         for t in a.label:
             view.setdefault("labels", []).extend(x.strip() for x in t.split(",") if x.strip())
         for t in a.distance:
@@ -1979,7 +2023,8 @@ def again_main(argv):
             cmd.append(rec[k])
             k += 1
     print("again: moorlight-share " + " ".join(cmd + ["-o", own] + argv[1:]), file=sys.stderr)
-    return build_main(cmd + ["-o", own] + argv[1:])
+    kinds = {m["name"]: m["kind"] for m in spec.get("maps", []) if m.get("name") and m.get("kind")}
+    return build_main(cmd + ["-o", own] + argv[1:], soft_kinds=kinds)
 
 
 def main(argv=None):

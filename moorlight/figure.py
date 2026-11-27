@@ -57,6 +57,9 @@ def shown_atoms(session, center, axes, half_w, half_h, slab):
             continue
         v = (m.xyz - center) @ axes.T
         keep = (np.abs(v[:, 0]) < half_w + 1.5) & (np.abs(v[:, 1]) < half_h + 1.5) & (np.abs(v[:, 2]) < slab)
+        if m.zone is not None:
+            z = {tuple(k) for k in m.zone}
+            keep &= np.array([k[:3] in z for k in m.keys])
         if keep.any():
             pts.append(m.xyz[keep])
             ids.append(m.id)
@@ -142,6 +145,15 @@ def legend(spec, maps_info, models_info):
                      f"from {x['source']}) shown as nested surfaces at {sign}{lv} σ "
                      f"(σ = rms of the whole map, {x['rms']:.3g} map units)"
                      + (f", {cols}" if x["kind"] == "diff" else "") + ".")
+    look = spec.get("look")
+    if look:
+        bits = []
+        if look.get("cartoon"):
+            bits.append("main chain as cartoon")
+        if look.get("radius"):
+            bits.append(f"residues within {look['radius']:g} Å of the {look['around']}")
+        if bits:
+            lines.append("Shown: " + ", ".join(bits) + ".")
     if spec.get("carve"):
         lines.append(f"Density is shown within {spec['carve']:g} Å of the displayed atoms"
                      + (" (an uncarved version is provided)." if spec.get("uncarved") else "."))

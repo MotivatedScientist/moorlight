@@ -39,6 +39,12 @@ moorlight dark.pdb dark.mtz:dark light.mtz:light   # file.mtz:label names the ma
   levels, labels and distances) plus a short text. Claude builds one with `tour_add` and `tour_save`. You can step through it
   with ◀ ▶ in the Display tab, and share it as a JSON file: `tour_load` opens the models and maps it needs. Single views can
   be saved with `save_view` / `restore_view`.
+- **Publication figures without scripting.** Click the atoms that matter (they get labels), press *Figure…* and *Make
+  figure*. The *figure look* (on by default, for the render only) draws the main chain of stick models as cartoon and only
+  the residues within 5 Å of the labelled atoms; your view stays as it is. The dialog also takes levels, legend text and
+  the PyMOL option. In the panel: click a molecule's colour square to change its carbon colour; *Show only near* / *Show
+  all* / *H-bonds* act on the clicked atoms; the tour box has *Export figures…* (one figure per stop). Clicked labels and
+  Distance-tool lines are kept in saved views and tour stops.
 - **Publication figures.** *Figure…* (or the `figure` command) renders the current view at journal size (89, 120 or 183 mm,
   or a 16:9 slide; 300 or 600 dpi): orthographic, on white, maps as nested transparent surfaces at 1, 1.5 and 2.25 × the
   map's level (weaker levels more transparent), cut to within 2 Å of the shown atoms. It writes `figures/<name>.png`, a

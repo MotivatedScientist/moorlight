@@ -67,12 +67,18 @@
         <div id="tour" class="hidden">
           <div class="row"><b id="tour-title">Tour</b><span style="flex:1"></span>
             <button id="tour-prev" title="Previous stop">◀</button><span id="tour-pos" class="hint"></span>
-            <button id="tour-next" title="Next stop">▶</button></div>
+            <button id="tour-next" title="Next stop">▶</button>
+            <button id="tour-figures" title="One publication figure per stop, with the stop's text in its legend">Export figures…</button></div>
           <div id="tour-name"></div>
           <div id="tour-text"></div>
         </div>
-        <h3>Molecules</h3>
+        <h3>Molecules <span class="hint">click a colour square to change it</span></h3>
         <div id="mol-list"></div>
+        <div class="row"><span class="hint" style="width:62px">selection</span>
+          <button id="btn-zone" title="Draw only residues within the radius of the clicked (labelled) atoms">Show only near</button>
+          <input id="zone-radius" type="number" value="5" step="0.5" min="1" style="width:46px" title="radius (Å)"> Å
+          <button id="btn-zone-clear" title="Draw all residues again">Show all</button>
+          <button id="btn-hbonds" title="Draw the hydrogen bonds (N/O within 3.3 Å) of the residues of the clicked atoms">H-bonds</button></div>
         <h3>Maps <span class="hint">scroll wheel changes the ● map</span></h3>
         <div id="map-list"></div>
         <div class="row seg" id="style-row"><span class="hint" style="width:62px">maps as</span>
@@ -127,10 +133,10 @@
 </div>
 <div id="figure-dlg" class="hidden">
   <form id="figure-form">
-    <h2>Publication figure</h2>
+    <h2 id="figure-head">Publication figure</h2>
     <p class="hint">This view, on white, orthographic; maps as nested surfaces (weaker levels more transparent), cut to the
       shown atoms. Files go to <code>figures/</code>: PNG, SVG with editable labels, draft legend, settings.</p>
-    <label>Name <input name="name" placeholder="from the tour stop, or figure_&lt;time&gt;"></label>
+    <label class="single-only">Name <input name="name" placeholder="from the tour stop, or figure_&lt;time&gt;"></label>
     <label>Size <select name="preset"><option value="single">single column, 89 mm</option>
       <option value="one-and-half">1.5 column, 120 mm</option><option value="double">double column, 183 mm</option>
       <option value="slide">slide, 16:9</option></select></label>
@@ -139,6 +145,10 @@
     <label>Maps as <select name="style"><option value="surfaces">nested surfaces</option><option value="slice">the slice plane</option>
       <option value="none">no maps</option></select></label>
     <label>Carve <input name="carve" type="number" value="2" step="0.5" min="0" style="width:60px"> Å around the shown atoms (0: off)</label>
+    <label>Levels <input name="levels" placeholder="σ, e.g. 3.5, 5, 7 (empty: 1, 1.5, 2.25 × each map's level)"></label>
+    <label><input type="checkbox" name="look" checked> figure look: main chain as cartoon, only residues within
+      <input name="look_radius" type="number" value="5" step="0.5" min="1" style="width:46px;flex:none"> Å of the labelled atoms</label>
+    <label class="single-only">Legend <input name="text" placeholder="what the figure shows (tour stops bring their own text)"></label>
     <label>Colours <select name="palette"><option value="standard">green / red</option><option value="cvd">blue / orange (colour-blind safe)</option></select></label>
     <label><input type="checkbox" name="pymol"> also a PyMOL script with the same view</label>
     <div class="row"><button type="submit" id="figure-go">Make figure</button><button type="button" id="figure-cancel">Cancel</button></div>

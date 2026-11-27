@@ -132,6 +132,7 @@ function pushView() {
     send({ type: "view", center: c.toArray().map((v) => +v.toFixed(2)), zoom: +S.zoom.toFixed(2), slab: +S.slab.toFixed(2),
       orient: rot.quaternion.toArray().map((v) => +v.toFixed(5)),
       selection: sel, clicked: S.clicked ? atomLabel(S.clicked.mol, S.clicked.idx) : null,
+      labelled: [...S.labels.keys()].map((k) => k.split(":").map(Number)),
       active_map: S.scrollMap, maps });
   }, 150);
 }
@@ -1019,7 +1020,11 @@ async function onAtomClick(p, e) {
       else if (e.altKey) await cmd("delete", { chain: r.chain, start: r.resseq, side_chain_only: true, mol: p.mol });
       else await cmd("delete", { chain: r.chain, start: r.resseq, mol: p.mol });
     } else if (tool === "distance") {
-      if (S.toolClicks.length === 2) { addDistance(S.toolClicks[0], S.toolClicks[1]); S.toolClicks = []; }
+      if (S.toolClicks.length === 2) {      // through the server, so views, tours and figures keep it
+        const [a, b] = S.toolClicks;
+        S.toolClicks = [];
+        await cmd("show_distance", { a: `${a.mol}#${atomLabel(a.mol, a.idx)}`, b: `${b.mol}#${atomLabel(b.mol, b.idx)}` });
+      }
     }
   } catch (err) { status("⚠ " + err.message); }
 }
@@ -1119,20 +1124,55 @@ $("#btn-save").onclick = () => {
   const def = mol?.data.path ? mol.data.path.replace(/(\.[^.]+)$/, "_coot$1") : "model.pdb";
   promptPopup("Save model", [{ key: "path", label: "path", value: def }], async (v) => status("saved " + await cmd("save_model", { path: v.path })));
 };
-$("#btn-figure").onclick = () => $("#figure-dlg").classList.remove("hidden");
+function openFigureDialog(tour) {
+  const dlg = $("#figure-dlg");
+  dlg.dataset.mode = tour ? "tour" : "single";
+  $("#figure-head").textContent = tour ? "Figures of every tour stop" : "Publication figure";
+  dlg.querySelectorAll(".single-only").forEach((e) => e.classList.toggle("hidden", !!tour));
+  dlg.classList.remove("hidden");
+}
+const selSpecs = () => S.selection.map((p) => `${p.mol}#${atomLabel(p.mol, p.idx)}`);
+$("#btn-zone").onclick = async () => {
+  if (!S.selection.length) { status("Click atoms first (they get labels); the zone is drawn around them."); return; }
+  const r = await cmd("show_zone", { atoms: selSpecs(), radius: +$("#zone-radius").value || 5 });
+  status(`Showing ${Object.values(r.residues).reduce((n, x) => n + x.length, 0)} residues within ${r.radius} Å of the clicked atoms.`);
+};
+$("#btn-zone-clear").onclick = () => cmd("show_zone", { clear: true });
+$("#btn-hbonds").onclick = async () => {
+  if (!S.selection.length) { status("Click an atom of each residue whose H-bonds you want."); return; }
+  const res = [...new Set(S.selection.map((p) => { const a = S.mols.get(p.mol).data.atoms[p.idx]; return `${p.mol}#${a[0]}/${a[1]}${a[2]}`; }))];
+  const r = await cmd("show_hbonds", { atoms: res });
+  status(r.length ? `${r.length} H-bonds: ` + r.slice(0, 6).map((h) => `${h.a} – ${h.b} ${h.distance} Å`).join("; ") : "No N/O contacts within 3.3 Å.");
+};
+$("#btn-figure").onclick = () => openFigureDialog(false);
+$("#tour-figures").onclick = () => openFigureDialog(true);
 $("#figure-cancel").onclick = () => $("#figure-dlg").classList.add("hidden");
 $("#figure-form").onsubmit = async (e) => {
   e.preventDefault();
   const f = new FormData(e.target), args = {};
   for (const [k, v] of f.entries()) if (v !== "") args[k] = v;
-  args.dpi = +args.dpi; args.carve = +args.carve; args.pymol = f.has("pymol");
+  args.dpi = +args.dpi; args.carve = +args.carve; args.pymol = f.has("pymol"); args.look = f.has("look");
+  args.look_radius = +args.look_radius || 5;
+  if (args.levels) {
+    const lv = args.levels.split(/[ ,;]+/).map(Number).filter((x) => x > 0);
+    if (lv.length) args.levels = lv; else delete args.levels;
+  }
+  const tour = $("#figure-dlg").dataset.mode === "tour";
   $("#figure-dlg").classList.add("hidden");
-  status("Making the figure…");
+  status(tour ? "Making one figure per tour stop…" : "Making the figure…");
   try {
-    const r = await cmd("figure", args);
-    status(`Figure: ${r.files.png}${r.warnings.length ? "  ⚠ " + r.warnings.join("; ") : ""}`);
-    addLog(`figure written: ${Object.values(r.files).join(", ")}`);
-    for (const w of r.warnings) addLog("⚠ " + w);
+    if (tour) {
+      for (const k of ["name", "text"]) delete args[k];
+      const r = await cmd("figure_tour", { options: args });
+      status(`Figures: ${r.figures.length} in ${r.folder}`);
+      addLog(`figures written to ${r.folder} (legends in figures.md)`);
+      for (const fg of r.figures) for (const w of fg.warnings) addLog(`⚠ ${fg.stop}: ${w}`);
+    } else {
+      const r = await cmd("figure", args);
+      status(`Figure: ${r.files.png}${r.warnings.length ? "  ⚠ " + r.warnings.join("; ") : ""}`);
+      addLog(`figure written: ${Object.values(r.files).join(", ")}`);
+      for (const w of r.warnings) addLog("⚠ " + w);
+    }
   } catch (err) { /* cmd shows the error */ }
 };
 $("#btn-open").onclick = () => promptPopup("Open file or TorchRef directory", [{ key: "path", label: "path" }], async (v) => {
@@ -1269,6 +1309,18 @@ function renderMolList() {
       `<button title="Style: sticks → cartoon (main chain as a tube, side chains as sticks) → lines">${mol.style || "sticks"}</button>` +
       `<button title="Make active (edits apply here)">edit</button><button title="Close">×</button>`;
     const [cb, hcb] = div.querySelectorAll("input");
+    const swatch = div.querySelector(".swatch");
+    swatch.title = "Change the carbon colour";
+    swatch.style.cursor = "pointer";
+    swatch.onclick = () => {
+      const pick = document.createElement("input");
+      pick.type = "color"; pick.value = sw;
+      Object.assign(pick.style, { position: "fixed", left: "50%", top: "40%", opacity: "0", width: "1px", height: "1px" });
+      document.body.appendChild(pick);
+      pick.onchange = () => { cmd("set_molecule", { mol: id, color: pick.value }); pick.remove(); };
+      pick.onblur = () => setTimeout(() => pick.remove(), 500);
+      pick.click();
+    };
     const styleBtn = div.querySelector("button[title^='Style:']");
     styleBtn.onclick = () => cmd("set_molecule", { mol: id, style: { sticks: "cartoon", cartoon: "lines", lines: "sticks" }[mol.style] || "sticks" });
     if (hcb) hcb.onchange = () => cmd("set_molecule", { mol: id, hydrogens: hcb.checked });

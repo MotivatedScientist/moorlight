@@ -181,7 +181,7 @@ class App:
         t = m.get("type")
         s = self.s
         if t == "view":
-            for k in ("center", "orient", "zoom", "slab", "selection", "clicked", "active_map"):
+            for k in ("center", "orient", "zoom", "slab", "selection", "clicked", "active_map", "labelled"):
                 if k in m:
                     s.view[k] = m[k]
             for mid, mv in (m.get("maps") or {}).items():

@@ -350,10 +350,55 @@ class Session:
               "title": ("string", "figure title for the legend"),
               "text": ("string", "what the figure shows, for the legend (default: the tour stop's text)"),
               "out_dir": ("string", "folder (default <workdir>/figures)"),
-              "pymol": ("boolean", "also write a PyMOL script and cut maps")}, view_only=True)
+              "pymol": ("boolean", "also write a PyMOL script and cut maps"),
+              "look": ("boolean", "figure look (default true): only for the render, main chain of stick models as "
+                                  "cartoon and only residues near the labelled atoms (or the centre); off: as on screen"),
+              "look_radius": ("number", "Å around the labelled atoms for the figure look (default 5)")}, view_only=True)
     def figure(self, name=None, preset="single", width_mm=None, aspect=None, dpi=300, background="white",
                style="surfaces", maps=None, levels=None, carve=2.0, uncarved=None, palette="standard", font_pt=7.0,
-               title=None, text=None, out_dir=None, pymol=False):
+               title=None, text=None, out_dir=None, pymol=False, look=True, look_radius=5.0):
+        """look: only while rendering, draw the main chain of stick models as cartoon and only residues within
+        look_radius of the labelled atoms (or of the centre); the view is restored afterwards."""
+        saved, note = {}, None
+        if look:
+            focus, around = [], "labelled atoms"
+            for mid, i in self.view.get("labelled") or []:          # atoms labelled by clicking in the viewer
+                m = self.molecules.get(int(mid))
+                if m is not None and 0 <= int(i) < len(m.xyz):
+                    focus.append(m.xyz[int(i)])
+            for spec in self.annotations.get("labels", []) + [x for d in self.annotations.get("distances", []) for x in d[:2]]:
+                try:
+                    focus.append(self.point(spec))
+                except Exception:
+                    pass
+            if not focus:
+                focus, around = [np.asarray(self.view.get("center") or [0, 0, 0], float)], "centre of the view"
+            tree = cKDTree(np.array(focus))
+            cartooned = []
+            for m in self.molecules.values():
+                if not m.visible or not len(m.xyz):
+                    continue
+                saved[m.id] = (m.style, m.zone)
+                if m.zone is None:
+                    d = tree.query(m.xyz)[0]
+                    m.zone = sorted({k[:3] for k, dd in zip(m.keys, d) if dd <= float(look_radius)})
+                if (m.style or "sticks") == "sticks" and any(i[4] == "CA" and not i[8] for i in m.info):
+                    m.style = "cartoon"
+                    cartooned.append(m.name)
+                self.push_display(m)
+            note = {"cartoon": cartooned, "radius": float(look_radius), "around": around}
+        try:
+            return self._figure(name, preset, width_mm, aspect, dpi, background, style, maps, levels, carve, uncarved,
+                                palette, font_pt, title, text, out_dir, pymol, note)
+        finally:
+            for mid, (st, zn) in saved.items():
+                m = self.molecules.get(mid)
+                if m is not None:
+                    m.style, m.zone = st, zn
+                    self.push_display(m)
+
+    def _figure(self, name, preset, width_mm, aspect, dpi, background, style, maps, levels, carve, uncarved, palette,
+                font_pt, title, text, out_dir, pymol, look_note):
         from . import figure as F
         if preset not in F.PRESETS:
             raise ValueError(f"preset: one of {list(F.PRESETS)}")
@@ -416,6 +461,7 @@ class Session:
                 "models": [{"id": m.id, "name": m.name, "path": m.path} for m in self.molecules.values() if m.visible],
                 "distances": bool(any(lb.get("kind") == "distance" for lb in res.get("labels", []))),
                 "hbonds": bool(res.get("hbonds")), "coordination": bool(res.get("coordination")),
+                "look": look_note,
                 "view": self._snapshot()}
         d = self._path(out_dir) if out_dir else os.path.join(self.workdir, "figures")
         paths = F.write_files(d, name, {**res, "width": W, "height": H}, spec)
@@ -1044,6 +1090,17 @@ class Session:
             pass          # no browser connected: use the last reported view
         return self.view
 
+    def _annotations_with_clicks(self):
+        """API labels plus the labels the user made by clicking atoms in the viewer (so views and tour stops keep them)."""
+        ann = json.loads(json.dumps(self.annotations))
+        for mid, i in self.view.get("labelled") or []:
+            m = self.molecules.get(int(mid))
+            if m is not None and 0 <= int(i) < len(m.keys):
+                spec = f"{m.id}#{self._atom_label(m, int(i))}"
+                if spec not in ann["labels"]:
+                    ann["labels"].append(spec)
+        return ann
+
     def _snapshot(self):
         v = self._fresh_view()
         return {
@@ -1052,7 +1109,7 @@ class Session:
             "molecules": [{"id": m.id, "name": m.name, **m.display()} for m in self.molecules.values()],
             "maps": [{"id": x.id, "name": x.name, "visible": x.visible, "level_sigma": x.level_sigma, "radius": x.radius,
                       "color": x.color} for x in self.maps.values()],
-            "annotations": json.loads(json.dumps(self.annotations)),
+            "annotations": self._annotations_with_clicks(),
             "slice": json.loads(json.dumps(self.slice)),
         }
 
@@ -1409,6 +1466,7 @@ class Session:
     @command("Remove all labels and distance lines.", view_only=True)
     def clear_annotations(self):
         self.annotations = {"labels": [], "distances": []}
+        self.view["labelled"] = []
         self.broadcast({"type": "annotate", "clear_labels": True, "clear_distances": True})
         return "ok"
 

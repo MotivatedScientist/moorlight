@@ -125,6 +125,26 @@ def guess_kind(f_label):
                       or "POLDER" in up or "OMIT" in up) else "2fofc"
 
 
+def is_density_label(f):
+    """Amplitude labels known to be density (not difference) map coefficients."""
+    up = f.upper()
+    return up.startswith(("2", "FWT", "FEXT", "F-MODEL", "FMODEL")) or \
+        up in ("F", "FO", "FP", "FOBS", "FC", "FCALC", "FC_ALL", "FWT_FILL")
+
+
+def label_tells_kind(f):
+    """True if the column label says what kind of map it is (else the values have to)."""
+    return guess_kind(f) == "diff" or is_density_label(f)
+
+
+def kind_from_values(arr):
+    """'diff' or '2fofc' from map values: density maps have almost nothing below mean - 2.5 rms (< 0.004 % of the
+    grid in 2mFo-DFc maps), difference maps have noise there (0.4-1.4 %)."""
+    v = np.asarray(arr).ravel()
+    v = v[:: max(1, v.size // 1_000_000)].astype(np.float64)
+    return "2fofc" if np.mean(v < v.mean() - 2.5 * v.std()) < 0.001 else "diff"
+
+
 def check_columns(mtz, f, phi):
     """Raise a readable error unless f is an amplitude-like and phi a phase column of the MTZ."""
     cols = {c.label: c.type for c in mtz.columns}
@@ -150,6 +170,8 @@ class XMap:
         self.source = source
         self.f, self.phi = f, phi
         self.mean, self.rms = 0.0, rms or 1.0
+        self.max_sigma = None      # largest |value - mean| / rms in the cell (known once the map is computed)
+        self.kind_open = False     # kind only guessed from an unknown label: decided from the values when computed
         if grid is not None:
             self.grid = grid
         self.level_sigma = DEFAULT_LEVEL[kind]
@@ -173,6 +195,12 @@ class XMap:
         arr = np.array(g, copy=False)
         self.mean = float(arr.mean())
         self.rms = float(arr.std())
+        self.max_sigma = float(max(arr.max() - self.mean, self.mean - arr.min()) / self.rms) if self.rms else None
+        if self.kind_open:
+            self.kind_open = False
+            kind = kind_from_values(arr)
+            if kind != self.kind:
+                self.kind, self.level_sigma, self.color = kind, DEFAULT_LEVEL[kind], COLORS[kind]
 
     @property
     def computed(self):
@@ -192,9 +220,10 @@ class XMap:
     def info(self):
         return {
             "id": self.id, "name": self.name, "kind": self.kind, "source": self.source,
-            "f": self.f, "phi": self.phi, "rms": self.rms, "level_sigma": self.level_sigma,
+            "f": self.f, "phi": self.phi, "rms": self.rms, "mean": self.mean, "level_sigma": self.level_sigma,
             "level_abs": self.level_sigma * self.rms, "visible": self.visible,
             "color": self.color, "radius": self.radius, "resolution": round(self.resolution, 2), "d_min": self.d_min,
+            "max_sigma": None if self.max_sigma is None else round(self.max_sigma, 2),
         }
 
     def spacing(self):
@@ -211,6 +240,22 @@ class XMap:
         tr.mat.fromlist([[step, 0, 0], [0, step, 0], [0, 0, step]])
         tr.vec.fromlist(origin.tolist())
         self.grid.interpolate_values(arr, tr)
+        return arr, origin, step
+
+    def sigma_box(self, center, radius, max_n=96):
+        """Values in sigma ((v - mean) / rms) on an orthogonal cube around center, at the map's grid spacing (coarser
+        if the cube would have more than max_n points a side). Returns (arr float32 [i, j, k], origin, step);
+        position of [i, j, k] = origin + step * (i, j, k)."""
+        step = max(self.spacing(), 2 * radius / (max_n - 1))
+        n = int(np.ceil(2 * radius / step)) + 1
+        origin = np.asarray(center, dtype=float) - radius
+        arr = np.zeros((n, n, n), dtype=np.float32)
+        tr = gemmi.Transform()
+        tr.mat.fromlist([[step, 0, 0], [0, step, 0], [0, 0, step]])
+        tr.vec.fromlist(origin.tolist())
+        self.grid.interpolate_values(arr, tr)
+        arr -= self.mean
+        arr /= self.rms
         return arr, origin, step
 
     def value_at(self, xyz):

@@ -61,7 +61,10 @@ What the commands cover:
 - **Loading:** `load_model`, `load_mtz` (TorchRef, phenix, Fo-Fo and polder columns detected; `label`, `columns`, `d_min`),
   `load_map`, `load_torchref`, `reload` after a refinement finished.
 - **Showing:** `goto`, `goto_atom`, `frame_atoms`, `set_center`, `set_map` (visible, level in σ, colour), `rename_map`,
-  `set_molecule` / `solo` (visibility, carbon colour), `label_atoms`, `show_distance`, `screenshot`.
+  `set_molecule` / `solo` (visibility, carbon colour), `label_atoms`, `show_distance`, `screenshot`;
+  `slice` draws the map on a plane (as in shared pages): `slice atoms='["A/401 C1", "A/401 C2", "A/401 C3"]'` lays it
+  through atoms and turns the view onto it, `fix`, `depth`, `thickness`, `style=mesh` goes back. It returns the strongest
+  + and − value on the plane with the nearest atoms.
 - **Measuring:** `density_at_atoms`, `density_profile`, `density_at_point`, `distance`, `peaks` (with whole-cell rank),
   `map_correlation`, `ligands`.
 - **Building and refinement:** `refine` (map, difference-map or both targets), `accept_refinement` / `reject_refinement`,

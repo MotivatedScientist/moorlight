@@ -22,6 +22,13 @@ moorlight dark.pdb dark.mtz:dark light.mtz:light   # file.mtz:label names the ma
   matched resolution. Maps can be renamed (`rename_map`).
 
   Maps are drawn as Coot-style chicken wire within a 10 Å radius of the centre. The scroll wheel changes the level of the map marked ●.
+  Each map has a level slider (log scale up to the map's strongest value, as in shared pages), the level in σ and on the
+  map's own scale. A map whose column labels do not say what it is (e.g. `FDDCAT`) is classified from its values when it
+  is first computed: difference maps have noise below −2.5 σ, density maps almost none.
+- **Map slices.** *Maps as: Slice* draws the map on a plane instead of mesh contours, as in shared pages: green +, red −
+  (the map colour for density), brighter towards 3 × level, contour lines at 1, 2, 4 … × level. The live plane faces you
+  through the centre and follows the view; *Fix plane* locks it to the molecule, *Depth* moves it along its normal,
+  *Thickness* shows the strongest value within the slab, *Through selected atoms* lays it through the labelled atoms.
 - **Real-space refinement.** Choose a zone, the residue ±1 (R), a sphere (Shift-R), or a new alternative conformer. Each refinement builds TorchRef restraints (bonds, angles, torsions, planes, chirals; ligand CIFs included) for the moving residues plus a fixed shell around them. These are minimised against the refinement map (the one marked **R**) with live updates in the view. Drag an atom to pull it; Enter accepts, Esc rejects. Fixed atoms never move.
 - **Difference target.** Set the refinement target to *difference* (or *map + difference*). Moving atoms are then fitted so that the model's light-minus-dark density matches a difference map (WDF by default), with a fitted scale. The dark reference is D.pdb for TorchRef difference refinement, otherwise the residue's other alternative conformers, otherwise the starting coordinates. The banner shows the live difference CC.
 - **Repulsion.** Non-bonded repulsion is off by default, so you can pull atoms on top of each other. Tick *atoms repel* to switch it on.
@@ -83,6 +90,9 @@ Underneath is a small HTTP API:
   - `density_at_point`.
   - `density_at_atoms`, with `maps=[...]` independent of visibility.
 - **Annotation:** `label_atoms`, `show_distance`, `clear_annotations`. Labels and distances are drawn into screenshots.
+- **Slices:** `slice` (style `slice`/`mesh`, `atoms=[...]` for a plane through atoms, `fix`, `depth`, `thickness`, `map_id`)
+  returns where the plane is and its strongest positive and negative values with the nearest atoms. Saved views and tour
+  stops keep the slice.
 - **Screenshots:** `screenshot` waits until the view has settled and its map contours are computed. It takes `width`, `crop` and `path`.
 
 ## Claude skill: guided result tours

@@ -17,7 +17,7 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from . import edit
-from .maps import XMap, detect_columns, check_columns, guess_kind, split_weight, DEFAULT_VISIBLE
+from .maps import XMap, detect_columns, check_columns, guess_kind, label_tells_kind, split_weight, DEFAULT_VISIBLE
 from .model import BondOrders, Molecule
 
 COMMANDS: dict[str, dict] = {}
@@ -100,6 +100,10 @@ class Session:
         self.cif_paths: list[str] = []
         self.bond_orders = BondOrders(self.cif_paths)
         self.view = {"center": [0, 0, 0], "zoom": 30, "selection": [], "clicked": None}
+        # map slices: style 'slice' draws maps as a plane (as in shared pages) instead of mesh contours. lock: the plane
+        # fixed in the molecule {center, orient} (orient: view quaternion whose z row is the plane normal), else the
+        # plane faces the viewer through the centre. map: map id shown (None: the first visible map).
+        self.slice = {"style": "mesh", "map": None, "lock": None, "depth": 0.0, "thickness": 0.0}
         self.rsr = None
         self.rsr_thread = None
         self.rsr_weight = 60.0
@@ -261,7 +265,8 @@ class Session:
                     "maps": [f"{x.id}: {x.name} | {x.source} | {x.kind} | {'visible' if x.visible else 'hidden'} | "
                              f"{x.level_sigma:g}σ{' | R' if x.id == self.refinement_map else ''}" for x in self.maps.values()],
                     "view": {k: v.get(k) for k in ("center", "zoom", "slab")},
-                    "views": list(self.views), "tour": f"{self.tour_index + 1}/{len(self.tour['stops'])}" if self.tour["stops"] else None}
+                    "views": list(self.views), "tour": f"{self.tour_index + 1}/{len(self.tour['stops'])}" if self.tour["stops"] else None,
+                    "slice": self.slice if self.slice["style"] == "slice" else None}
         out = {"workdir": self.workdir, "molecules": [], "maps": [], "view": {}}
         for m in self.molecules.values():
             chains = [(ch.name, len(ch)) for ch in m.st[0]]
@@ -287,6 +292,7 @@ class Session:
             v["selection_atoms"] = [self._atom_label(m, i) for i in sel if i < len(m.info)]
         out["view"] = v
         out["refinement_settings"] = self.rsr_settings()
+        out["slice"] = self.slice
         if self.rsr is not None:
             out["refinement"] = {"running": True, "moving_atoms": len(self.rsr.moving_mol),
                                  "altloc": self.rsr.altloc, **self.rsr.geometry_stats()}
@@ -371,6 +377,7 @@ class Session:
     def load_mtz(self, path, columns=None, show_all=False, label=None, d_min=None):
         p = self._path(path)
         mtz = gemmi.read_mtz_file(p)
+        open_kind = set()          # F labels whose kind is only a guess (decided from the values when computed)
         if columns:
             found = []
             if isinstance(columns, str):
@@ -381,11 +388,15 @@ class Session:
                     raise ValueError(f"columns entry {c!r}: expected 'F,PHI[,kind[,name]]'")
                 check_columns(mtz, parts[0], parts[1])
                 kind = parts[2] if len(parts) > 2 and parts[2] else guess_kind(parts[0])
+                if not (len(parts) > 2 and parts[2]) and not label_tells_kind(parts[0]):
+                    open_kind.add(parts[0])
                 if kind not in ("diff", "2fofc"):
                     raise ValueError(f"kind must be 'diff' or '2fofc', not {kind!r}")
                 found.append((parts[0], parts[1], kind, parts[3] if len(parts) > 3 else f"{parts[0]}/{parts[1]}"))
         else:
             found = detect_columns(mtz)
+            open_kind = {f for f, phi, kind, name in found if kind == "2fofc" and f == name.split("/")[0]
+                         and not label_tells_kind(f)}
         if label:
             found = [(f, phi, kind, label if len(found) == 1 else f"{label} {name}") for f, phi, kind, name in found]
         if d_min:
@@ -401,6 +412,15 @@ class Session:
             x = XMap.from_mtz(mtz, f, phi, kind, label, os.path.basename(p), self.sample_rate, lazy=not vis, d_min=d_min)
             x.path = p
             x.visible = vis
+            if f in open_kind:
+                x.kind_open = True
+                if x.computed:                  # already computed (visible): decide now
+                    x.kind_open = False
+                    from .maps import kind_from_values
+                    k = kind_from_values(np.array(x.grid, copy=False))
+                    if k != x.kind:
+                        from .maps import COLORS, DEFAULT_LEVEL
+                        x.kind, x.level_sigma, x.color = k, DEFAULT_LEVEL[k], COLORS[k]
             self.maps[x.id] = x
             new.append(x)
             if self.refinement_map is None and kind == "2fofc" and f not in ("F-model", "Fc_dark", "Fc_light"):
@@ -618,6 +638,8 @@ class Session:
         slab = float(slab) if slab else max(3.0, depth + 2.0)
         fit = extent + float(padding)
         self.view["center"] = c.tolist()
+        if q:
+            self.view["orient"] = q
         self.broadcast({"type": "view_cmd", "center": c.tolist(), "fit_radius": fit, "slab": slab, **({"orient": q} if q else {})})
         out = {"center": [round(float(v), 3) for v in c], "fit_radius": round(fit, 2), "slab": round(slab, 2), "oriented": q is not None}
         if len(pts) >= 2:
@@ -869,6 +891,7 @@ class Session:
             "maps": [{"id": x.id, "name": x.name, "visible": x.visible, "level_sigma": x.level_sigma, "radius": x.radius,
                       "color": x.color} for x in self.maps.values()],
             "annotations": json.loads(json.dumps(self.annotations)),
+            "slice": json.loads(json.dumps(self.slice)),
         }
 
     @staticmethod
@@ -915,12 +938,133 @@ class Session:
                     self.show_distance(a, b)
                 except ValueError:
                     pass
+        if isinstance(snap.get("slice"), dict):
+            self._set_slice(snap["slice"])
         msg = {"type": "view_cmd"}
         for k in ("center", "orient", "zoom", "slab"):
             if snap.get(k) is not None:
                 msg[k] = snap[k]
         self.view.update({k: msg[k] for k in ("center", "orient", "zoom", "slab") if k in msg})
         self.broadcast(msg)
+
+    # ------------------------------------------------------------- map slices
+    def _set_slice(self, d):
+        sl = self.slice
+        if d.get("style") in ("mesh", "slice"):
+            sl["style"] = d["style"]
+        if "map" in d:
+            sl["map"] = None if d["map"] is None else int(d["map"])
+        if "lock" in d:
+            lk = d["lock"]
+            sl["lock"] = None if not lk else {"center": [float(v) for v in lk["center"]],
+                                              "orient": [float(v) for v in lk["orient"]]}
+        for k in ("depth", "thickness"):
+            if d.get(k) is not None:
+                sl[k] = float(d[k])
+        self.broadcast({"type": "slice", **sl})
+
+    def slice_from_client(self, m):
+        """The user changed the slice in the viewer."""
+        self._set_slice({k: m[k] for k in ("style", "map", "lock", "depth", "thickness") if k in m})
+
+    def _slice_map(self):
+        sl = self.slice
+        if sl["map"] in self.maps:
+            return self.maps[sl["map"]]
+        return next((x for x in self.maps.values() if x.visible), None)
+
+    def _slice_plane(self):
+        """(centre on the plane, axes rows x, y, normal) of the slice as drawn."""
+        from scipy.spatial.transform import Rotation
+        sl = self.slice
+        if sl["lock"]:
+            c, q = np.array(sl["lock"]["center"]), sl["lock"]["orient"]
+        else:
+            v = self.view
+            c, q = np.array(v.get("center") or [0, 0, 0], float), v.get("orient")
+        axes = Rotation.from_quat(q).as_matrix() if q else np.eye(3)
+        return c + sl["depth"] * axes[2], axes
+
+    def _slice_stats(self, x):
+        """Strongest positive and negative value on the slice (with thickness: within it), with the nearest atoms."""
+        c, axes = self._slice_plane()
+        r, sl = x.radius, self.slice
+        step = 0.25
+        n = int(2 * r / step) + 1
+        nt = 13 if sl["thickness"] > 0.01 else 1
+        dt = sl["thickness"] / 12 if nt > 1 else 0.0
+        arr = np.zeros((n, n, nt), dtype=np.float32)
+        tr = gemmi.Transform()
+        tr.mat.fromlist(np.column_stack([axes[0] * step, axes[1] * step, axes[2] * dt]).tolist())
+        tr.vec.fromlist((c - r * axes[0] - r * axes[1] - (sl["thickness"] / 2 if nt > 1 else 0) * axes[2]).tolist())
+        x.grid.interpolate_values(arr, tr)
+        sig = (arr - x.mean) / x.rms
+        mols = [m for m in self.molecules.values() if m.visible and len(m.xyz)]
+        out = {}
+        for label, idx in (("max", np.unravel_index(np.argmax(sig), sig.shape)),
+                           ("min", np.unravel_index(np.argmin(sig), sig.shape))):
+            i, j, k = (int(v) for v in idx)
+            p = tr.apply(gemmi.Vec3(i, j, k))
+            p = np.array([p.x, p.y, p.z])
+            e = {"sigma": round(float(sig[i, j, k]), 2), "xyz": [round(float(v), 2) for v in p]}
+            best = None
+            for m in mols:
+                d, ai = cKDTree(m.xyz).query(p)
+                if best is None or d < best[0]:
+                    best = (d, m, ai)
+            if best:
+                e["nearest"] = (f"{best[1].id}#" if len(mols) > 1 else "") + self._atom_label(best[1], best[2])
+                e["distance"] = round(float(best[0]), 2)
+            out[label] = e
+        return {"map": self.map_key(x), "center": [round(float(v), 3) for v in c],
+                "normal": [round(float(v), 4) for v in axes[2]], "half_width": r, **out}
+
+    @command("Map slices, as in shared pages: style='slice' draws the map as a plane (green +, red -; blue for density "
+             "maps; brighter towards 3x level, contour lines at 1, 2, 4... x level) instead of mesh contours. The plane faces "
+             "the viewer through the centre and follows the view, unless it is fixed in the molecule (fix=true, or atoms=...). "
+             "Returns where the plane is and the strongest positive / negative value on it, with the nearest atoms.",
+             {"style": ("string", "'slice' or 'mesh'"),
+              "map_id": ("integer", "map drawn on the slice (default: the first visible map; 0 = back to that default)"),
+              "atoms": ("array", "plane through these atoms (3 or more: best plane; 2: the plane holding that line that "
+                                 "faces the viewer most); turns the view onto it and fixes it; implies style='slice'"),
+              "fix": ("boolean", "true: fix the plane where it is now; false: let it follow the view again"),
+              "depth": ("number", "move the plane along its normal (Å)"),
+              "thickness": ("number", "show the strongest value within ± thickness/2 of the plane (Å; 0 = the plane)"),
+              **MOL}, view_only=True)
+    def slice(self, style=None, map_id=None, atoms=None, fix=None, depth=None, thickness=None, mol=None):
+        d = {}
+        if style is not None:
+            if style not in ("slice", "mesh"):
+                raise ValueError("style: 'slice' or 'mesh'")
+            d["style"] = style
+        if map_id is not None:
+            if int(map_id) and int(map_id) not in self.maps:
+                raise ValueError(f"no map {map_id}; maps: {list(self.maps)}")
+            d["map"] = int(map_id) or None
+        if atoms:
+            self.frame_atoms(atoms, mol)
+            d["lock"] = {"center": list(self.view["center"]), "orient": self.view.get("orient") or [0, 0, 0, 1]}
+            d.setdefault("style", "slice")
+            d["depth"] = 0.0
+        elif fix is True:
+            v = self._fresh_view()
+            d["lock"] = {"center": list(v["center"]), "orient": v.get("orient") or [0, 0, 0, 1]}
+        elif fix is False:
+            d["lock"] = None
+        if depth is not None:
+            d["depth"] = depth
+        if thickness is not None:
+            d["thickness"] = max(0.0, float(thickness))
+        if not atoms:
+            self._fresh_view()
+        self._set_slice(d)
+        out = {"slice": self.slice}
+        x = self._slice_map()
+        if x is None:
+            out["note"] = "no map is visible: the plane is drawn empty"
+        elif self.slice["style"] == "slice":
+            out["plane"] = self._slice_stats(x)
+        return out
 
     @command("Save the current view under a name: centre, rotation, zoom, slab, visible molecules (and colours), visible maps "
              "and their levels, labels/distances set through the API. Stored in <workdir>/.moorlight/views.json.",

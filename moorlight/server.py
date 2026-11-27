@@ -99,6 +99,7 @@ class App:
             "view": s.view, "log": s.log[-50:], "chat": self.chat.history[-100:],
             "chat_settings": self.chat.settings(),
             "rsr_settings": s.rsr_settings(),
+            "slice": s.slice,
             "tour": {"title": s.tour["title"], "index": s.tour_index,
                      "stops": [{"name": st.get("name", ""), "text": st.get("text", "")} for st in s.tour["stops"]]},
             "rsr": None if s.rsr is None else {"mol": s.rsr.mol.id, "idx": s.rsr.moving_mol.tolist()},
@@ -112,8 +113,32 @@ class App:
         center = [float(q["x"]), float(q["y"]), float(q["z"])]
         radius = float(q.get("r", x.radius))
         level = float(q["level"]) if "level" in q else None
+        kind = x.kind
         meshes = await asyncio.to_thread(x.mesh, center, radius, level)
-        body = pack_meshes({"map": x.id, "center": center, "level_sigma": level or x.level_sigma}, meshes)
+        if x.kind != kind:                 # decided from the values on first computation
+            self.s.push_maps()
+            level = None
+        body = pack_meshes({"map": x.id, "center": center, "level_sigma": level or x.level_sigma,
+                            "max_sigma": x.max_sigma}, meshes)
+        return web.Response(body=body, content_type="application/octet-stream")
+
+    async def box(self, request):
+        """Map values in sigma on a cube around a point (for map slices): uint32 header length, JSON header
+        {n, origin, step} padded to 4 bytes, then float32 values [i][j][k]."""
+        q = request.query
+        x = self.s.maps.get(int(request.match_info["id"]))
+        if x is None:
+            raise web.HTTPNotFound()
+        center = [float(q["x"]), float(q["y"]), float(q["z"])]
+        radius = min(40.0, float(q.get("r", x.radius + 2)))
+        kind = x.kind
+        arr, origin, step = await asyncio.to_thread(x.sigma_box, center, radius)
+        if x.kind != kind:
+            self.s.push_maps()
+        head = dumps({"map": x.id, "n": list(arr.shape), "origin": [float(v) for v in origin], "step": float(step),
+                      "max_sigma": x.max_sigma}).encode()
+        head += b" " * (-len(head) % 4)
+        body = len(head).to_bytes(4, "little") + head + arr.astype("<f4").tobytes()
         return web.Response(body=body, content_type="application/octet-stream")
 
     async def ws(self, request):
@@ -145,6 +170,8 @@ class App:
                 if x:
                     x.visible = mv.get("visible", x.visible)
                     x.level_sigma = mv.get("level_sigma", x.level_sigma)
+        elif t == "slice":
+            s.slice_from_client(m)
         elif t == "pull":
             s.pull(m["atom"], m.get("xyz"))
         elif t == "reply":
@@ -182,6 +209,7 @@ class App:
         app.router.add_post("/api/cmd", self.cmd)
         app.router.add_get("/api/state", self.full_state)
         app.router.add_get("/api/map/{id}/mesh", self.mesh)
+        app.router.add_get("/api/map/{id}/box", self.box)
         app.router.add_get("/ws", self.ws)
         app.router.add_static("/static", WEB)
 

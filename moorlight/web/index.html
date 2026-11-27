@@ -74,6 +74,17 @@
         <div id="mol-list"></div>
         <h3>Maps <span class="hint">scroll wheel changes the ● map</span></h3>
         <div id="map-list"></div>
+        <div class="row seg" id="style-row"><span class="hint" style="width:62px">maps as</span>
+          <button type="button" data-style="mesh" aria-pressed="true">Mesh</button>
+          <button type="button" data-style="slice" aria-pressed="false">Slice</button></div>
+        <div id="slice-box" class="hidden">
+          <div class="ctl-row"><label for="slice-depth">Depth</label><input type="range" id="slice-depth" min="-8" max="8" step="0.1" value="0"><output id="slice-depth-out">+0.0 Å</output></div>
+          <div class="ctl-row"><label for="slice-thick">Thickness</label><input type="range" id="slice-thick" min="0" max="4" step="0.1" value="0"><output id="slice-thick-out">thin</output></div>
+          <div class="row"><button id="slice-lock" type="button" aria-pressed="false" title="Fix the plane in the molecule">Fix plane</button>
+            <button id="slice-atoms" type="button" title="Best plane through the selected atoms (click atoms to label them)">Through selected atoms</button>
+            <button id="slice-face" type="button" title="Plane through the centre, facing you, following the view">Face me</button></div>
+          <p class="hint" style="margin:2px 0">The live plane faces you and follows the view; Fix plane locks it to the molecule.</p>
+        </div>
         <h3>Refinement</h3>
         <div class="row"><label style="width:62px">target</label>
           <select id="rsr-target">

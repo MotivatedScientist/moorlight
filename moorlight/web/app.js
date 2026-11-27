@@ -97,6 +97,7 @@ function render() {
   if (!needsRender) return;
   needsRender = false;
   updateCamera();
+  updateSlice();
   crossObj.visible = S.cross;
   renderer.render(scene, camera);
   updateLabels();
@@ -142,7 +143,7 @@ function onServer(m) {
     case "active_molecule": S.activeMol = m.mol; renderMolList(); break;
     case "maps": setMaps(m.maps, m.refinement_map); renderRsrSelects(); break;
     case "rsr_settings": setRsrSettings(m.settings); break;
-    case "maps_changed": for (const mm of S.maps.values()) mm.lastCenter = null; scheduleContour(true); break;
+    case "maps_changed": for (const mm of S.maps.values()) mm.lastCenter = null; SLICE.box = null; scheduleContour(true); break;
     case "view_cmd":
       if (m.center) moveTo(new THREE.Vector3(...m.center));
       if (m.orient) { rot.quaternion.set(...m.orient); needsRender = true; }   // long axis of the side chain horizontal, flat face to the viewer
@@ -157,6 +158,7 @@ function onServer(m) {
       redraw(); scheduleContour(true); pushView();
       break;
     case "mol_display": applyDisplay(m.mol, m); break;
+    case "slice": applySlice(m); break;
     case "annotate": annotate(m); break;
     case "tour": renderTour(m); break;
     case "log": addLog(m.text); break;
@@ -181,7 +183,7 @@ function onServer(m) {
     case "chat_reset": $("#chat-log").innerHTML = ""; break;
   }
 }
-function render1() { updateCamera(); renderer.render(scene, camera); }
+function render1() { updateCamera(); updateSlice(); renderer.render(scene, camera); }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Screenshot after the view has settled: centre animation done and every visible map contoured for this centre/level.
@@ -192,8 +194,9 @@ async function takeScreenshot(opt = {}) {
       clearTimeout(contourTimer);
       while (contourBusy) await sleep(30);
       await contourAll();
-      const stale = [...S.maps.values()].some((m) => m.info.visible &&
-        !(m.lastCenter && m.lastCenter.distanceTo(S.center) < 0.5 && m.lastLevel === m.info.level_sigma));
+      const stale = (SLICE.style !== "slice" && [...S.maps.values()].some((m) => m.info.visible &&
+        !(m.lastCenter && m.lastCenter.distanceTo(S.center) < 0.5 && m.lastLevel === m.info.level_sigma))) ||
+        (SLICE.style === "slice" && !(await sliceReady()));
       if (!stale && !anim) break;
       await sleep(50);
     }
@@ -502,7 +505,6 @@ function setMaps(list, refinementMap) {
     }
     const changed = !m.info || m.info.level_sigma !== info.level_sigma || m.info.radius !== info.radius || m.info.color !== info.color;
     m.info = info;
-    m.obj.visible = info.visible;
     if (changed) m.lastCenter = null;
   }
   for (const [id, m] of S.maps) if (!seen.has(id)) {
@@ -513,8 +515,14 @@ function setMaps(list, refinementMap) {
     const vis = [...S.maps.values()].filter((m) => m.info.visible);
     S.scrollMap = vis.length ? vis[0].info.id : (S.maps.keys().next().value ?? null);
   }
+  applyMapVisibility();
   renderMapList();
   scheduleContour(true);
+}
+// mesh contours are drawn in Mesh style only (Slice style shows the map on the slice plane instead)
+function applyMapVisibility() {
+  for (const m of S.maps.values()) m.obj.visible = m.info.visible && SLICE.style !== "slice";
+  redraw();
 }
 
 let contourTimer = null, contourBusy = false;
@@ -527,7 +535,7 @@ async function contourAll() {
   contourBusy = true;
   try {
     for (const [id, m] of S.maps) {
-      if (!m.info.visible) continue;
+      if (!m.info.visible || SLICE.style === "slice") continue;
       if (m.lastCenter && m.lastCenter.distanceTo(S.center) < 0.5 && m.lastLevel === m.info.level_sigma) continue;
       await contourMap(id);
     }
@@ -547,6 +555,7 @@ async function contourMap(id) {
   const buf = await resp.arrayBuffer();
   const hlen = new DataView(buf).getUint32(0, true);
   const header = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, hlen)));
+  if (header.max_sigma != null && m.info.max_sigma == null) { m.info.max_sigma = header.max_sigma; updateLevelUI(m); }
   let off = 4 + hlen;
   for (const ch of [...m.obj.children]) { m.obj.remove(ch); ch.geometry.dispose(); }
   for (const mesh of header.meshes) {
@@ -814,13 +823,7 @@ el.addEventListener("wheel", (e) => {
   changeLevel(m, step);
 }, { passive: false });
 
-function changeLevel(m, step) {
-  m.info.level_sigma = Math.max(0.1, +(m.info.level_sigma + step).toFixed(2));
-  m.lastLevel = null;
-  renderMapList();
-  status(`${m.info.name}: ${m.info.level_sigma.toFixed(2)}σ (${(m.info.level_sigma * m.info.rms).toFixed(3)} e/Å³)`);
-  scheduleContour(); pushView();
-}
+function changeLevel(m, step) { setLevel(m, m.info.level_sigma + step); }
 
 function centerOnAtom(p) {
   const x = p.mol === S.rsr?.mol && S.rsr.set.has(p.idx) ? S.rsr.full : S.mols.get(p.mol).xyz;
@@ -1160,36 +1163,93 @@ function renderMapList() {
   sel.innerHTML = "";
   for (const [id, m] of S.maps) {
     const i = m.info;
+    const wrap = document.createElement("div");
+    wrap.className = "mapitem";
     const div = document.createElement("div");
     div.className = "item";
     const color = i.kind === "diff" ? "linear-gradient(90deg,#00d000 50%,#e00000 50%)" : i.color;
     div.innerHTML = `<input type="radio" name="scroll" title="scroll wheel changes this map" ${S.scrollMap === id ? "checked" : ""}>` +
       `<input type="checkbox" ${i.visible ? "checked" : ""}>` +
       `<span class="swatch" style="background:${color}"></span>` +
-      `<span class="name" title="${i.source}: ${i.f} / ${i.phi}">[${id}] ${i.name}</span>` +
-      `<input type="number" step="0.1" value="${i.level_sigma.toFixed(2)}" title="contour level (σ)">` +
-      `<span class="abs">${(i.level_sigma * i.rms).toFixed(3)}</span>` +
+      `<span class="name"></span>` +
       `<span title="refinement map (target: map)" style="cursor:pointer;color:${S.refinementMap === id ? "#e6c229" : "#444"}">R</span>` +
       (i.kind === "diff"
         ? `<span title="difference map (target: difference)" style="cursor:pointer;color:${S.rsrSettings?.diff_map === id ? "#4fd0ff" : "#444"}">Δ</span>`
         : `<span style="width:0.7em"></span>`) +
       `<button title="Close">×</button>`;
+    const nm = div.querySelector(".name");
+    nm.textContent = `[${id}] ${i.name}`;
+    nm.title = `${i.source}: ${i.f} / ${i.phi}`;
     div.querySelector("button[title='Close']").onclick = () => cmd("close_map", { map_id: id });
-    const [radio, cb, num] = div.querySelectorAll("input");
+    const [radio, cb] = div.querySelectorAll("input");
     const rbtn = div.querySelector("span[title^='refinement map']");
     const dbtn = div.querySelector("span[title^='difference map']");
     if (dbtn) dbtn.onclick = () => cmd("set_refinement_options", { diff_map: id });
     radio.onchange = () => { S.scrollMap = id; pushView(); };
-    cb.onchange = () => { i.visible = cb.checked; m.obj.visible = cb.checked; m.lastCenter = null; scheduleContour(true); pushView(); redraw(); };
-    num.onchange = () => { i.level_sigma = +num.value; m.lastLevel = null; scheduleContour(true); pushView(); renderMapList(); };
+    cb.onchange = () => { i.visible = cb.checked; applyMapVisibility(); m.lastCenter = null; scheduleContour(true); pushView(); redraw(); };
     rbtn.onclick = () => cmd("set_map", { map_id: id, refinement_map: true });
-    box.appendChild(div);
+    const lvl = document.createElement("div");
+    lvl.className = "lvl";
+    lvl.innerHTML = `<button type="button" aria-label="Lower contour level">&minus;</button>` +
+      `<input type="range" min="0" max="1000" step="1">` +
+      `<button type="button" aria-label="Raise contour level">+</button>` +
+      `<input type="number" step="0.1" title="contour level (σ)">`;
+    const [down, up] = lvl.querySelectorAll("button");
+    const [range, num] = lvl.querySelectorAll("input");
+    range.setAttribute("aria-label", `Contour level of ${i.name}`);
+    down.onclick = () => changeLevel(m, -levelStep(m));
+    up.onclick = () => changeLevel(m, levelStep(m));
+    range.addEventListener("input", () => setLevel(m, posToLevel(m, +range.value), range));
+    range.addEventListener("change", () => scheduleContour(true));
+    num.onchange = () => setLevel(m, +num.value, num);
+    const scale = document.createElement("div");
+    scale.className = "scale";
+    m.ui = { range, num, scale };
+    wrap.append(div, lvl, scale);
+    box.appendChild(wrap);
+    updateLevelUI(m);
     const o = document.createElement("option");
     o.value = id; o.textContent = `[${id}] ${i.name}`;
     sel.appendChild(o);
   }
   if (prev) sel.value = prev;
   else { const d = [...S.maps.values()].find((m) => m.info.kind === "diff" && m.info.visible); if (d) sel.value = d.info.id; }
+  renderSliceMapUI();
+}
+
+// Levels as in shared pages: sliders on a log scale from 1σ (difference maps) or 0.3σ (density) to the map's largest
+// value, so the usual 1-6σ get most of the travel and the strongest peaks are still in reach.
+const levelStep = (m) => (m.info.kind === "diff" ? 0.5 : 0.25);
+const fmt3 = (v) => { const a = Math.abs(v); return a && (a < 1e-3 || a >= 1e5) ? v.toExponential(2) : String(+v.toPrecision(3)); };
+function levelRange(m) {
+  const lo = m.info.kind === "diff" ? 1 : 0.3;
+  return [lo, Math.max(lo * 4, m.info.max_sigma || lo * 20)];
+}
+function levelToPos(m, v) {
+  const [lo, hi] = levelRange(m);
+  return Math.round(1000 * Math.log(Math.min(hi, Math.max(lo, v)) / lo) / Math.log(hi / lo));
+}
+function posToLevel(m, p) {
+  const [lo, hi] = levelRange(m);
+  const v = lo * Math.pow(hi / lo, p / 1000);
+  return v < 10 ? Math.round(v * 10) / 10 : Math.round(v);
+}
+const fmtLevel = (m) => `${m.info.kind === "diff" ? "±" : ""}${m.info.level_sigma.toFixed(m.info.level_sigma < 10 ? 2 : 1)}σ`;
+function updateLevelUI(m, source = null) {
+  const u = m.ui, i = m.info;
+  if (!u) return;
+  if (u.range !== source) u.range.value = String(levelToPos(m, i.level_sigma));
+  if (u.num !== source) u.num.value = i.level_sigma.toFixed(2);
+  const diff = i.kind === "diff";
+  u.scale.textContent = `map rms ${fmt3(i.rms)} · level ${diff ? "±" : ""}${fmt3(i.level_sigma * i.rms + (diff ? 0 : i.mean || 0))} (map units)`;
+}
+function setLevel(m, v, source = null) {
+  if (!(v > 0)) return;
+  m.info.level_sigma = Math.max(0.1, +(+v).toFixed(2));
+  m.lastLevel = null;
+  updateLevelUI(m, source);
+  status(`${m.info.name}: ${fmtLevel(m)} (${fmt3(m.info.level_sigma * m.info.rms)} map units)`);
+  scheduleContour(); pushView(); redraw();
 }
 
 // ------------------------------------------------------------------- tours
@@ -1309,6 +1369,204 @@ window.moorlight = {
   },
 };
 
+// ------------------------------------------------------------------- map slices
+// As in shared pages: the map drawn on a plane (green +, red -; the map colour for density maps; brighter towards
+// 3 x level, contour lines at 1, 2, 4 ... x level). The plane faces the viewer through the centre and follows the view,
+// or is fixed in the molecule (lock). The server sends the map values in sigma on a cube around the plane; the shader
+// samples them (thickness: the strongest value within +/- thickness/2). State is kept on the server (`slice` command).
+const SLICE = { style: "mesh", map: null, lock: null, depth: 0, thickness: 0, mesh: null, box: null, busy: false,
+  fresh: false, failed: false };
+const SLICE_VS = `
+uniform mat4 uPlane;
+varying vec3 vModel;
+varying vec2 vXY;
+void main() {
+  vModel = (uPlane * vec4(position, 1.0)).xyz;
+  vXY = position.xy;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}`;
+const SLICE_FS = `
+precision highp float;
+precision highp sampler3D;
+uniform sampler3D uMap;
+uniform mat3 uGinv;
+uniform vec3 uOrigin, uN, uPos, uNeg, uNormal;
+uniform float uLevel, uThick;
+uniform int uSigned, uWrap, uEmpty;
+varying vec3 vModel;
+varying vec2 vXY;
+// a map stored on a block or box (not the periodic cell) has no values outside it
+bool outside(vec3 idx) {
+  return uWrap == 0 && (any(lessThan(idx, vec3(-0.5))) || any(greaterThan(idx, uN - 0.5)));
+}
+float sampleAt(vec3 p) {
+  vec3 idx = uGinv * (p - uOrigin);
+  return outside(idx) ? 0.0 : texture(uMap, (idx.zyx + 0.5) / uN.zyx).r;
+}
+void main() {
+  if (uEmpty == 1) { gl_FragColor = vec4(0.0, 0.0, 0.0, 0.45); return; }   // no map shown: the bare plane
+  if (outside(uGinv * (vModel - uOrigin))) discard;
+  // thin plane: the value on it; thick slice: the strongest value (sign kept) within +/- uThick / 2 of it
+  float v = sampleAt(vModel);
+  if (uThick > 0.01) {
+    for (int s = 0; s < 13; s++) {
+      float w = sampleAt(vModel + uNormal * uThick * (float(s) / 12.0 - 0.5));
+      if (uSigned == 0 ? w > v : abs(w) > abs(v)) v = w;
+    }
+  }
+  float a = (uSigned == 0 && v < 0.0) ? 0.0 : abs(v);
+  vec3 hue = v >= 0.0 ? uPos : uNeg;
+  float k = clamp(a / (3.0 * uLevel), 0.0, 1.0);
+  vec3 col = hue * k;
+  float alpha = 0.45 + 0.5 * k;
+  float g = log2(max(a, 1e-6) / uLevel);
+  float line = (1.0 - smoothstep(0.0, 1.5 * fwidth(g), abs(fract(g + 0.5) - 0.5))) * smoothstep(0.85, 0.95, a / uLevel);
+  col = mix(col, min(hue * 1.2 + 0.3, vec3(1.0)), line);
+  alpha = max(alpha, line);
+  gl_FragColor = vec4(col * alpha, alpha);
+}`;
+
+function makePlaneMesh(outlineColor) {
+  const mat = new THREE.ShaderMaterial({
+    vertexShader: SLICE_VS, fragmentShader: SLICE_FS, side: THREE.DoubleSide, transparent: true,
+    premultipliedAlpha: true, depthWrite: false,
+    uniforms: {
+      uMap: { value: null }, uPlane: { value: new THREE.Matrix4() }, uGinv: { value: new THREE.Matrix3() },
+      uOrigin: { value: new THREE.Vector3() }, uN: { value: new THREE.Vector3(1, 1, 1) }, uPos: { value: new THREE.Color() },
+      uNeg: { value: new THREE.Color() }, uLevel: { value: 1 }, uSigned: { value: 1 }, uWrap: { value: 0 }, uEmpty: { value: 1 },
+      uNormal: { value: new THREE.Vector3(0, 0, 1) }, uThick: { value: 0 },
+    },
+  });
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat);
+  mesh.matrixAutoUpdate = false;
+  mesh.frustumCulled = false;
+  mesh.renderOrder = 5;
+  const frame = new LineSegmentsGeometry();
+  frame.setPositions([-1, -1, 0, 1, -1, 0, 1, -1, 0, 1, 1, 0, 1, 1, 0, -1, 1, 0, -1, 1, 0, -1, -1, 0]);
+  const outline = new LineSegments2(frame, lineMat(2, { color: outlineColor, vertexColors: false }));
+  outline.frustumCulled = false;
+  mesh.add(outline);
+  world.add(mesh);
+  return mesh;
+}
+renderer.debug.onShaderError = (gl, program, vs, fs) => {
+  SLICE.failed = true;
+  console.error("shader error", gl.getProgramInfoLog(program), gl.getShaderInfoLog(fs));
+  status("The map slice is not available in this browser; back to mesh.");
+  setTimeout(() => setSliceStyle("mesh"), 0);
+};
+
+const sliceMap = () => S.maps.get(SLICE.map) || [...S.maps.values()].find((m) => m.info.visible) || null;
+const sl_M = new THREE.Matrix4(), sl_T = new THREE.Matrix4(), sl_Rt = new THREE.Matrix4(), sl_q = new THREE.Quaternion();
+const sl_n = new THREE.Vector3(), sl_p0 = new THREE.Vector3(), sl_c = new THREE.Vector3();
+function slicePlacement(r) {
+  let c = S.center;
+  if (SLICE.lock) { c = sl_c.set(...SLICE.lock.center); sl_Rt.makeRotationFromQuaternion(sl_q.set(...SLICE.lock.orient)).transpose(); }
+  else sl_Rt.makeRotationFromQuaternion(rot.quaternion).transpose();     // columns: the view axes in model coordinates
+  sl_M.makeTranslation(c.x, c.y, c.z).multiply(sl_Rt).multiply(sl_T.makeTranslation(0, 0, SLICE.depth)).multiply(sl_T.makeScale(r, r, 1));
+  sl_n.setFromMatrixColumn(sl_Rt, 2);
+  sl_p0.copy(c).addScaledVector(sl_n, SLICE.depth);
+}
+async function fetchBox(m, p0, r) {
+  SLICE.busy = true;
+  try {
+    const resp = await fetch(`/api/map/${m.info.id}/box?x=${p0.x}&y=${p0.y}&z=${p0.z}&r=${r}`);
+    if (!resp.ok) { status(`⚠ slice of map ${m.info.id}: ${(await resp.text()).slice(0, 200)}`); return; }
+    const buf = await resp.arrayBuffer();
+    const hlen = new DataView(buf).getUint32(0, true);
+    const h = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, hlen)));
+    const vals = new Float32Array(buf, 4 + hlen);
+    const half = new Uint16Array(vals.length);
+    for (let q = 0; q < vals.length; q++) half[q] = THREE.DataUtils.toHalfFloat(vals[q]);
+    const [n0, n1, n2] = h.n;
+    const tex = new THREE.Data3DTexture(half, n2, n1, n0);    // x = third index (fastest), z = first
+    tex.format = THREE.RedFormat;
+    tex.type = THREE.HalfFloatType;
+    tex.minFilter = tex.magFilter = THREE.LinearFilter;
+    tex.wrapS = tex.wrapT = tex.wrapR = THREE.ClampToEdgeWrapping;
+    tex.unpackAlignment = 1;
+    tex.needsUpdate = true;
+    if (SLICE.box) SLICE.box.tex.dispose();
+    SLICE.box = { map: m.info.id, center: p0.clone(), r, tex, origin: h.origin, step: h.step, n: h.n };
+    if (h.max_sigma != null && m.info.max_sigma == null) { m.info.max_sigma = h.max_sigma; updateLevelUI(m); }
+  } finally { SLICE.busy = false; redraw(); }
+}
+// per frame: place the plane; fetch the map around it when it moved out of the stored cube
+function updateSlice() {
+  if (SLICE.style !== "slice") { if (SLICE.mesh) SLICE.mesh.visible = false; SLICE.fresh = true; return; }
+  if (!SLICE.mesh) SLICE.mesh = makePlaneMesh(0xe6c229);
+  const m = sliceMap(), r = m ? m.info.radius : 10;
+  slicePlacement(r);
+  const mesh = SLICE.mesh, u = mesh.material.uniforms;
+  mesh.matrix.copy(sl_M);
+  mesh.matrixWorldNeedsUpdate = true;
+  mesh.visible = true;
+  u.uPlane.value.copy(sl_M);
+  u.uNormal.value.copy(sl_n);
+  u.uThick.value = SLICE.thickness;
+  if (!m) { u.uEmpty.value = 1; SLICE.fresh = true; return; }
+  const need = r * Math.SQRT2 + SLICE.thickness / 2 + 0.5, b = SLICE.box;
+  SLICE.fresh = !!b && b.map === m.info.id && b.r >= need && b.center.distanceTo(sl_p0) <= b.r - need;
+  if (!SLICE.fresh && !SLICE.busy) fetchBox(m, sl_p0.clone(), Math.min(40, need + 3));
+  const have = b && b.map === m.info.id;
+  u.uEmpty.value = have ? 0 : 1;
+  if (have) {
+    u.uMap.value = b.tex;
+    u.uGinv.value.set(1 / b.step, 0, 0, 0, 1 / b.step, 0, 0, 0, 1 / b.step);
+    u.uOrigin.value.set(...b.origin);
+    u.uN.value.set(...b.n);
+  }
+  const diff = m.info.kind === "diff";
+  u.uPos.value.set(diff ? "#00d000" : m.info.color);
+  u.uNeg.value.set("#e00000");
+  u.uSigned.value = diff ? 1 : 0;
+  u.uLevel.value = m.info.level_sigma;
+}
+function sliceReady() { render1(); return SLICE.fresh && !SLICE.busy; }
+
+function sendSlice() {
+  send({ type: "slice", style: SLICE.style, map: SLICE.map, lock: SLICE.lock, depth: SLICE.depth, thickness: SLICE.thickness });
+}
+function renderSliceUI() {
+  document.querySelectorAll("#style-row button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.style === SLICE.style)));
+  $("#slice-box").classList.toggle("hidden", SLICE.style !== "slice");
+  $("#slice-depth").value = String(SLICE.depth);
+  $("#slice-depth-out").textContent = `${SLICE.depth >= 0 ? "+" : "−"}${Math.abs(SLICE.depth).toFixed(1)} Å`;
+  $("#slice-thick").value = String(SLICE.thickness);
+  $("#slice-thick-out").textContent = SLICE.thickness > 0.01 ? `${SLICE.thickness.toFixed(1)} Å` : "thin";
+  const lk = $("#slice-lock");
+  lk.setAttribute("aria-pressed", String(!!SLICE.lock));
+  lk.textContent = SLICE.lock ? "Release" : "Fix plane";
+}
+function renderSliceMapUI() { redraw(); }
+function applySlice(m) {        // from the server (command, restored view, or our own change echoed)
+  const was = SLICE.style;
+  for (const k of ["style", "map", "lock", "depth", "thickness"]) if (k in m) SLICE[k] = m[k];
+  if (SLICE.style === "slice" && SLICE.failed) SLICE.style = "mesh";
+  renderSliceUI();
+  if (was !== SLICE.style) { applyMapVisibility(); for (const x of S.maps.values()) x.lastCenter = null; scheduleContour(true); }
+  redraw();
+}
+function setSliceStyle(style) {
+  applySlice({ style });
+  sendSlice();
+  if (style === "slice") status("Slice: the map on a plane through the centre. Fix plane locks it to the molecule.");
+}
+document.querySelectorAll("#style-row button").forEach((b) => b.addEventListener("click", () => setSliceStyle(b.dataset.style)));
+$("#slice-depth").addEventListener("input", (e) => { applySlice({ depth: +e.target.value }); sendSlice(); });
+$("#slice-thick").addEventListener("input", (e) => { applySlice({ thickness: +e.target.value }); sendSlice(); });
+$("#slice-lock").addEventListener("click", () => {
+  applySlice({ lock: SLICE.lock ? null : { center: S.center.toArray(), orient: rot.quaternion.toArray() } });
+  sendSlice();
+  if (SLICE.lock) status("Plane fixed in the molecule: rotate to see it from the side; Depth moves it along its normal.");
+});
+$("#slice-face").addEventListener("click", () => { applySlice({ lock: null, depth: 0 }); sendSlice(); });
+$("#slice-atoms").addEventListener("click", async () => {
+  const atoms = S.selection.map((p) => `${p.mol}#${atomLabel(p.mol, p.idx)}`);
+  if (atoms.length < 2) { status("Click two or more atoms (they get labels) for a plane through them."); return; }
+  try { await cmd("slice", { atoms }); } catch (err) { status(`⚠ ${err.message || err}`); }
+});
+
 // ------------------------------------------------------------------- start
 async function init() {
   resize();
@@ -1323,6 +1581,7 @@ async function init() {
   if (st.rsr_settings) setRsrSettings(st.rsr_settings);
   if (st.rsr) startRSR({ mol: st.rsr.mol, idx: st.rsr.idx });
   if (st.tour) renderTour(st.tour);
+  if (st.slice) applySlice(st.slice);
   renderMolList();
   connect();
   setTimeout(pushView, 500);   // the server learns this tab's zoom, slab and rotation

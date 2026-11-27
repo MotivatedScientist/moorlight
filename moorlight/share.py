@@ -41,7 +41,7 @@ import gemmi
 import numpy as np
 from scipy.spatial import cKDTree
 
-from .maps import DEFAULT_VISIBLE, SymMapper, detect_columns, check_columns, guess_kind, map_from_mtz
+from .maps import DEFAULT_VISIBLE, SymMapper, detect_columns, check_columns, guess_kind, is_density_label, map_from_mtz
 from .model import Molecule
 from .session import parse_atom_spec
 
@@ -391,7 +391,7 @@ def read_map(spec, base):
             f, phi = [c.strip() for c in spec["columns"].split(",")[:2]]
             check_columns(mtz, f, phi)
             # a label we know (DELFWT, FWT, ...) gives the kind; others (FDDCAT) are left to the values
-            kind = guess_kind(f) if guess_kind(f) == "diff" or _density_label(f) else None
+            kind = guess_kind(f) if guess_kind(f) == "diff" or is_density_label(f) else None
         else:
             found = detect_columns(mtz)
             if not found:
@@ -400,12 +400,6 @@ def read_map(spec, base):
         sample = float(spec.get("sample_rate", 3.0))
         return map_from_mtz(mtz, f, phi, sample), spec.get("kind", kind)
     raise ValueError(f"{p}: unknown map format (use .ccp4/.map/.mrc or .mtz)")
-
-
-def _density_label(f):
-    up = f.upper()
-    return up.startswith(("2", "FWT", "FEXT", "F-MODEL", "FMODEL")) or \
-        up in ("F", "FO", "FP", "FOBS", "FC", "FCALC", "FC_ALL", "FWT_FILL")
 
 
 def guess_map_kind(path, values):

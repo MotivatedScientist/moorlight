@@ -290,7 +290,7 @@ function setMolecule(data) {
 function setDisplayFields(mol, d) {
   mol.group.visible = d.visible !== false;
   mol.color = d.color || null;
-  if (d.style) mol.style = d.style;
+  if ("style" in d) mol.style = d.style || "sticks";   // null = the default style (also after a figure look is undone)
   if (d.hydrogens != null) mol.hideH = !d.hydrogens;
   if ("zone" in d) mol.zone = d.zone ? new Set(d.zone) : null;
 }

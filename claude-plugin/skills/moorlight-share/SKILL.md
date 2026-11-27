@@ -66,7 +66,7 @@ whole job should take about 30 s: run the command, publish, reply. You never wri
 | `--level 4`, `--level "MAP=1.2"` | contour level: of all difference maps, or of one map |
 | `--units absolute --unit-label SD` | maps already in their own units, e.g. noise SD. Give `--level` too (e.g. 4) |
 | `--standalone` | a full HTML document to send as a file. It opens offline in any current browser |
-| `--around R` | store the maps only within about R Å of the starting centre. Much smaller files (e.g. `--around 15` for e-mail). Density is then missing further out |
+| `--around R` | store the maps only within about R Å of the starting centre. Much smaller files (e.g. `--around 15` for e-mail). Density is then missing further out, and automatic planes stay inside it. For large structures it also keeps the maps on their own grid: without it they may be resampled more coarsely, which the summary notes, and peak values can be off by about 0.5 σ |
 | `--at "SPECS"`, `--near SPEC [--near-radius R]` | also print map values at atoms, or the atoms (one line per residue) and peaks around a point |
 | `--planes N`, `--min L` | automatic planes when no `--plane` is given (default 5, at features beyond 1.5 × the level) |
 

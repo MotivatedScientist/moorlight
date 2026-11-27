@@ -488,6 +488,7 @@ class PageMap:
             uc = grid.unit_cell
             step = float(spec.get("step") or max(min(uc.a / grid.nu, uc.b / grid.nv, uc.c / grid.nw) / 2,
                                                  (np.prod(hi - lo) / budget) ** (1 / 3)))
+            self.step, self.native_step = step, min(uc.a / grid.nu, uc.b / grid.nv, uc.c / grid.nw)
             self.n = np.maximum(2, np.ceil((hi - lo) / step).astype(int) + 1)
             self.arr = np.zeros(tuple(self.n), dtype=np.float32)
             tr = gemmi.Transform()
@@ -690,9 +691,11 @@ class Share:
                 pts = self.atoms.xyz(frame)
                 if len(pts) < 3 and s.get("frame") is None and len(pts) == 1:
                     # a lone atom (a metal): use it and the atoms within 2.6 A, its coordination
-                    fam = self.atoms.family(self.atoms.resolve(frame[0])[0])
-                    near_pts = [xyz for nb, _, xyz in self._drawn()
-                                if nb in fam and 0.1 < np.linalg.norm(xyz - pts[0]) <= 2.6]
+                    num0, idx0, _ = self.atoms.resolve(frame[0])
+                    fam = self.atoms.family(num0)
+                    near = [(nb, i, xyz) for nb, i, xyz in self._drawn()
+                            if nb in fam and 0.1 < np.linalg.norm(xyz - pts[0]) <= 2.6]
+                    near_pts = [xyz for *_, xyz in self._same_conformer(self._alt(num0, idx0[0]), near)]
                     if len(near_pts) >= 2:
                         pts = np.vstack([pts] + near_pts)
                 if len(pts) >= 3:
@@ -735,6 +738,34 @@ class Share:
             for i in range(len(nb.orig)):
                 yield self.atoms.nb_number[k], i, nb.xyz[i]
 
+    def _alt(self, number, i):
+        """Altloc of an atom on the page ('' for none)."""
+        if number <= len(self.mols):
+            return self.mols[number - 1].info[i][5]
+        nb = self.atoms.nb[next(kk for kk, nn in self.atoms.nb_number.items() if nn == number)]
+        return nb.mol.info[nb.orig[i]][5]
+
+    def _res_of(self, number, i):
+        """Residue of an atom on the page; each neighbour copy of a residue is a residue of its own."""
+        if number <= len(self.mols):
+            return (number,) + tuple(self.mols[number - 1].info[i][:3])
+        nb = self.atoms.nb[next(kk for kk, nn in self.atoms.nb_number.items() if nn == number)]
+        return (number, nb.tags[i]) + tuple(nb.mol.info[nb.orig[i]][:3])
+
+    def _same_conformer(self, alt, cands):
+        """Atoms (number, index, ...) that can be present together with a centre atom of altloc `alt`: no altloc or the
+        same one. A centre without altloc keeps each residue's first conformer, so two alternative ligands (e.g. a
+        substrate in A and a product in B) are never counted as coordinating at the same time."""
+        if alt:
+            return [c for c in cands if self._alt(c[0], c[1]) in ("", alt)]
+        first = {}
+        for c in cands:
+            a = self._alt(c[0], c[1])
+            if a:
+                r = self._res_of(c[0], c[1])
+                first[r] = min(first.get(r, a), a)
+        return [c for c in cands if self._alt(c[0], c[1]) in ("", first.get(self._res_of(c[0], c[1])))]
+
     def ligands_of(self, spec):
         """[(atom spec, distance)] of the atoms coordinating a lone metal or ion atom (its own model), nearest first;
         [] for other atoms."""
@@ -744,8 +775,9 @@ class Share:
             return []
         cut = coordination_cutoff(el)
         fam = self.atoms.family(number)
-        out = [(self.atoms.name(nb, i), float(np.linalg.norm(x - xyz[0]))) for nb, i, x in self._drawn()
-               if nb in fam and 0.1 < np.linalg.norm(x - xyz[0]) <= cut]
+        near = [(nb, i, x) for nb, i, x in self._drawn() if nb in fam and 0.1 < np.linalg.norm(x - xyz[0]) <= cut]
+        out = [(self.atoms.name(nb, i), float(np.linalg.norm(x - xyz[0])))
+               for nb, i, x in self._same_conformer(self._alt(number, idx[0]), near)]
         return sorted(out, key=lambda t: t[1])
 
     def plane(self, p, k):
@@ -766,6 +798,7 @@ class Share:
                 fam = self.atoms.family(number)          # another model's copy of the site is not a ligand
                 ligands = [(nb, i, float(np.linalg.norm(x - xyz[0]))) for nb, i, x in self._drawn()
                            if nb in fam and 0.1 < np.linalg.norm(x - xyz[0]) <= cut]
+                ligands = self._same_conformer(self._alt(number, idx[0]), ligands)
                 if len(ligands) < 2:
                     raise ValueError(f"fewer than two atoms within {cut:g} A of {p['coordination']}; raise \"cutoff\"")
                 ligands.sort(key=lambda t: t[2])
@@ -909,8 +942,10 @@ class Share:
 
     def about(self):
         """What the page was made from, for its About section: the input files with checksums, the tool and the
-        build time, and the spec (file names without their directories)."""
+        build time, and the spec (file names without their directories). The recorded command line is left out: it
+        holds absolute paths of the machine the page was built on, and stays in the .spec.json next to the page."""
         inputs, spec = [], json.loads(json.dumps(self.spec))
+        spec.pop("command", None)
         for role, key in (("model", "models"), ("map", "maps")):
             for e in spec.get(key) or []:
                 path = _path(e["path"], self.base)
@@ -924,7 +959,8 @@ class Share:
                 "spec": spec}
 
     def html(self, standalone=False):
-        data = json.dumps(self.payload(), separators=(",", ":")).replace("</", "<\\/")
+        # `<` escaped as \u003c: no `</script>` or `<!--` can end or confuse the data block, whatever names the files hold
+        data = json.dumps(_finite(self.payload()), separators=(",", ":"), allow_nan=False).replace("<", "\\u003c")
         with open(os.path.join(WEB, "share.html")) as fh:
             page = fh.read()
         with open(os.path.join(WEB, "share.js")) as fh:
@@ -935,12 +971,12 @@ class Share:
         script = three_bundle() + js
         if "</script" in script.lower():
             raise RuntimeError("page script contains '</script'")
-        page = (page.replace("{{TITLE}}", html.escape(self.spec.get("title", "Moorlight")))
-                .replace("{{DESCRIPTION}}", html.escape(self.spec.get("description", "")))
-                .replace("{{SCRIPT}}", script)
-                .replace("{{DATA}}", data))
+        fill = {"TITLE": html.escape(self.spec.get("title", "Moorlight")),
+                "DESCRIPTION": html.escape(self.spec.get("description", "")), "SCRIPT": script, "DATA": data}
+        # one pass, so a title such as 'x {{DATA}}' stays text instead of pulling the data in as HTML
+        page = re.sub(r"\{\{(TITLE|DESCRIPTION|SCRIPT|DATA)\}\}", lambda m: fill[m.group(1)], page)
         if standalone:
-            page = ("<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\n"
+            page = ("<!doctype html>\n<html lang=\"en\"><head>\n"     # the page itself starts with <meta charset>
                     "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">\n"
                     + page + "\n</html>\n")
         return page
@@ -989,6 +1025,12 @@ class Share:
             p(f"map {x.name!r} [{'difference' if x.kind == 'diff' else 'density'}]: "
               f"{'shown' if x.visible else 'hidden'} at {'±' if x.kind == 'diff' else ''}{x.level:g} {u}"
               + (f"; rms {x.rms:.3g}" if x.units == "sigma" else f"; its rms is {x.rms:.3g} {u}"))
+        coarse = [x for x in self.maps if x.mode == "box" and x.step > 1.2 * x.native_step]
+        if coarse:
+            x = coarse[0]
+            p(f"note: too large for the page at the maps' own grid, so they are resampled at {x.step:.2f} A (their grid: "
+              f"{x.native_step:.2f} A); values near peaks can be off by about half a {x.unit_label or x.units}. Add "
+              "--around 15 (maps only around the site) for the exact values")
         if diff is not None and v:
             c = np.array(v["center"])
             r = max(6.0, min(v["radius"], 10.0))
@@ -1246,6 +1288,17 @@ def _path(p, base):
     return p if os.path.isabs(p) else os.path.join(base, p)
 
 
+def _finite(o):
+    """NaN and infinities -> None (JSON.parse rejects them, which would leave the page blank)."""
+    if isinstance(o, float):
+        return o if np.isfinite(o) else None
+    if isinstance(o, dict):
+        return {k: _finite(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_finite(v) for v in o]
+    return o
+
+
 # ------------------------------------------------------------------- init
 def _map_entries(path, name, base):
     """Spec entries for one map file. An MTZ gives every map a refinement program writes for viewing (2mFo-DFc and
@@ -1271,11 +1324,11 @@ def _residue_spec(sh, k, i, atom=False):
     return sp if len(sh.mols) == 1 else f"{k}#{sp}"
 
 
-def _feature_planes(sh, x, thr, n):
+def _feature_planes(sh, x, thr, n, near=None):
     """Preset planes at the strongest features of difference map x: peaks of either sign beyond thr within 1.5 A of
     a model atom. A residue with more than five heavy atoms is a group of its own (the plane goes through its atoms
     around the strongest feature); smaller ones (metals, waters, ions) are grouped by name (a metal's plane is its
-    coordination)."""
+    coordination). near=(xyz, r): only features within r of xyz."""
     to_model = sh.atoms.near_model()
     heavy = [(k, i) for k, m in enumerate(sh.mols, 1) for i, e in enumerate(m.elements) if e != "H"]
     tree = cKDTree(np.array([sh.mols[k - 1].xyz[i] for k, i in heavy]))
@@ -1291,7 +1344,7 @@ def _feature_planes(sh, x, thr, n):
                 continue
             seen.append(pos)
             d, j = tree.query(pos)
-            if d <= 1.5:
+            if d <= 1.5 and (near is None or np.linalg.norm(pos - near[0]) <= near[1]):
                 feats.append((abs(v), v, *heavy[j]))
     feats.sort(key=lambda f: -f[0])
     groups = {}
@@ -1323,11 +1376,12 @@ def _feature_planes(sh, x, thr, n):
     return planes
 
 
-def _ligand_planes(sh, n):
+def _ligand_planes(sh, n, near=None):
     """Preset planes through the ligands (residues that are neither polymer nor water), the most buried first (the
     fraction of their atoms within 4 A of the model's polymer; then the largest), so a bound chromophore or inhibitor
     comes before surface lipids and additives. Then the coordination of single-atom residues (metals, ions) that have
-    two or more atoms within 2.6 A. A residue present in several models (dark and light) is used once."""
+    two or more atoms within 2.6 A. A residue present in several models (dark and light) is used once.
+    near=(xyz, r): only residues whose centre lies within r of xyz."""
     ligands, ions = [], []
     drawn = None
     seen = set()
@@ -1344,6 +1398,8 @@ def _ligand_planes(sh, n):
         for rkey, idx in residues.items():
             tab = gemmi.find_tabulated_residue(rkey[3])
             if tab is not None and (tab.is_amino_acid() or tab.is_nucleic_acid()) or rkey in seen:
+                continue
+            if near is not None and np.linalg.norm(m.xyz[idx].mean(0) - near[0]) > near[1]:
                 continue
             seen.add(rkey)
             name = f"{rkey[3]} {rkey[1]}{rkey[2]}"
@@ -1408,18 +1464,26 @@ def _requested_plane(sh, text):
     return d
 
 
+def _plane_anchor(sh, pl):
+    """Centre of the atoms a plane entry is built from."""
+    specs = list(pl.get("atoms") or []) + ([pl["coordination"]] if pl.get("coordination") else [])
+    return sh.atoms.xyz(specs).mean(0)
+
+
 def _is_primary_density(name):
     """Density maps worth showing first: not extrapolated, Fc or Fmodel maps."""
     return not re.search(r"(?i)extrapolated|\bfc\b|fmodel|\bfc \(", name)
 
 
 def init_spec(models, maps, title=None, units="sigma", unit_label=None, level=None, min_peak=None, n_planes=None,
-              planes=(), base=".", description="", center=None, radius=None, drop=(), cache=None):
+              planes=(), base=".", description="", center=None, radius=None, drop=(), cache=None, around=None):
     """A ready-to-build spec from files: a starting view of the whole structure and preset slice planes.
 
     Planes: the requested ones ('NAME=SPEC, SPEC, ...'), then up to n_planes automatic ones (default 5, or 0 when
     planes are requested): at the strongest features of the first difference map, or, without a difference map or
-    features, through the ligands and the coordination of metals."""
+    features, through the ligands and the coordination of metals. With a center, automatic planes stay within 15 A of
+    it; with `around` (maps stored only within that radius of the starting centre) they stay inside that region, so
+    no plane is drawn where the page holds no map."""
     spec = {"title": title or "Structure and maps", "description": description or "", "models": [], "maps": [],
             "planes": []}
     for m in models:
@@ -1455,11 +1519,24 @@ def init_spec(models, maps, title=None, units="sigma", unit_label=None, level=No
     for text in planes:
         spec["planes"].append(_requested_plane(sh, text))
     n_auto = (0 if planes else 5) if n_planes is None else n_planes
-    auto = []
-    if diff is not None and n_auto:
-        auto = _feature_planes(sh, diff, float(min_peak if min_peak is not None else 1.5 * diff.level), n_auto)
-    if not auto and n_auto:
-        auto = _ligand_planes(sh, n_auto)
+    thr = float(min_peak if min_peak is not None else 1.5 * diff.level) if diff is not None else None
+
+    def automatic(n, near=None):
+        found = _feature_planes(sh, diff, thr, n, near) if diff is not None and n else []
+        return found or (_ligand_planes(sh, n, near) if n else [])
+
+    limit = (max(4.0, float(around) - 2.0) if around else 15.0)
+    near = None
+    if center:
+        try:
+            near = (sh.atoms.xyz([t.strip() for t in center.split(",") if t.strip()]).mean(0), limit)
+        except ValueError as e:
+            raise ValueError(f"--center: {e}") from None
+    elif around and not planes and n_auto:
+        first = automatic(1)                  # the page will open on the first plane: keep the others near it
+        if first:
+            near = (_plane_anchor(sh, first[0]), limit)
+    auto = automatic(n_auto, near)
     spec["planes"] += auto
     names = [pl["name"] for pl in spec["planes"]]
     for pl in spec["planes"]:
@@ -1657,10 +1734,14 @@ MODEL_EXT = (".pdb", ".ent", ".cif", ".mmcif", ".pdb.gz", ".cif.gz", ".ent.gz")
 MAP_EXT = (".mtz", ".ccp4", ".map", ".mrc", ".map.gz", ".ccp4.gz")
 
 
-def _fetch_pdb_redo(code, out_dir):
+MAX_DOWNLOAD = 500e6
+
+
+def _fetch_pdb_redo(code, out_dir, name=""):
     """Download the PDB-REDO model and map coefficients of a PDB entry -> [model path, mtz path]."""
     import urllib.request
     code = code.lower()
+    print(f"{code.upper()}: no such file here, so fetching the PDB-REDO entry {code.upper()} (pdb-redo.eu)", file=sys.stderr)
     d = os.path.join(out_dir, code)
     os.makedirs(d, exist_ok=True)
     got = []
@@ -1670,12 +1751,17 @@ def _fetch_pdb_redo(code, out_dir):
             url = f"https://pdb-redo.eu/db/{code}/{code}_final.{ext}"
             try:
                 with urllib.request.urlopen(url, timeout=60) as r, open(dst + ".part", "wb") as fh:
-                    fh.write(r.read())
+                    total = 0
+                    while chunk := r.read(1 << 20):
+                        total += len(chunk)
+                        if total > MAX_DOWNLOAD:
+                            raise OSError(f"more than {MAX_DOWNLOAD / 1e6:.0f} MB")
+                        fh.write(chunk)
                 os.replace(dst + ".part", dst)
             except OSError as e:
                 raise ValueError(f"{code}: could not download {url} ({e}); give the model and map files instead")
         got.append(dst)
-    return [f"{got[0]}={code.upper()}", got[1]]
+    return [f"{got[0]}={name or code.upper()}", got[1]]
 
 
 def _expand_folder(d):
@@ -1778,7 +1864,7 @@ def build_main(argv, prog="moorlight-share"):
             if os.path.isdir(path):
                 files += _expand_folder(path)
             elif not os.path.exists(path) and re.fullmatch(r"\d[A-Za-z0-9]{3}", path):
-                files += _fetch_pdb_redo(path, out_dir)
+                files += _fetch_pdb_redo(path, out_dir, f.partition("=")[2])
             elif not os.path.exists(path):
                 raise ValueError(f"no file {path}")
             else:
@@ -1799,9 +1885,16 @@ def build_main(argv, prog="moorlight-share"):
         cache = {}
         spec = init_spec(models, maps, a.title, a.units, a.unit_label, diff_level[-1] if diff_level else None,
                          a.min_peak, a.planes, list(planes.values()), out_dir, a.description, a.center, a.radius,
-                         a.drop, cache)
+                         a.drop, cache, a.around)
         if a.around:
             spec["region"] = {"center": spec["view"]["center"], "radius": a.around}
+            sh0 = Share({**spec, "maps": [], "planes": []}, out_dir, cache)
+            c0 = sh0.point(spec["view"]["center"])
+            for pl in spec["planes"]:
+                d = float(np.linalg.norm(_plane_anchor(sh0, pl) - c0))
+                if d > a.around:
+                    print(f"warning: plane {pl['name']!r} is {d:.0f} A from the centre, outside --around {a.around:g}; "
+                          "it will show no map", file=sys.stderr)
         names = [m["name"] for m in spec["maps"]]
         for v in a.level:
             if "=" in v:
@@ -1872,7 +1965,21 @@ def again_main(argv):
     if not spec.get("command"):
         print(f"error: {argv[0]} has no recorded command (it was not made by a build)", file=sys.stderr)
         return 1
-    return build_main(spec["command"] + argv[1:])
+    # the page next to this spec, whatever -o the recorded command names (a spec from elsewhere cannot write
+    # anywhere else); an -o given now still wins
+    cmd, k, own = [], 0, os.path.abspath(argv[0])[:-len(".spec.json")] + ".html" if argv[0].endswith(".spec.json") \
+        else os.path.splitext(os.path.abspath(argv[0]))[0] + ".html"
+    rec = spec["command"]
+    while k < len(rec):
+        if rec[k] in ("-o", "--out"):
+            k += 2
+        elif str(rec[k]).startswith("--out="):
+            k += 1
+        else:
+            cmd.append(rec[k])
+            k += 1
+    print("again: moorlight-share " + " ".join(cmd + ["-o", own] + argv[1:]), file=sys.stderr)
+    return build_main(cmd + ["-o", own] + argv[1:])
 
 
 def main(argv=None):

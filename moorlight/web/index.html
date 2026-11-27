@@ -136,7 +136,9 @@
   <form id="figure-form">
     <h2 id="figure-head">Publication figure</h2>
     <p class="hint">This view, on white, orthographic; maps as nested surfaces (weaker levels more transparent), cut to the
-      shown atoms. Files go to <code>figures/</code>: PNG, SVG with editable labels, draft legend, settings.</p>
+      shown atoms. Files: PNG, SVG with editable labels, draft legend, settings.</p>
+    <label>Folder <input name="out_dir" id="figure-dir" spellcheck="false" title="~ works; remembered for this data"></label>
+    <p class="hint tour-only" style="margin:0">Each tour gets a subfolder named after it.</p>
     <label class="single-only">Name <input name="name" placeholder="from the tour stop, or figure_&lt;time&gt;"></label>
     <label>Size <select name="preset"><option value="single">single column, 89 mm</option>
       <option value="one-and-half">1.5 column, 120 mm</option><option value="double">double column, 183 mm</option>

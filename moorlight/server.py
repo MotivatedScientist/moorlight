@@ -101,6 +101,7 @@ class App:
             "rsr_settings": s.rsr_settings(),
             "slice": s.slice,
             "figure_preview": s.preview is not None,
+            "figure_dir": s.figure_folder(),
             "tour": {"title": s.tour["title"], "index": s.tour_index,
                      "stops": [{"name": st.get("name", ""), "text": st.get("text", "")} for st in s.tour["stops"]]},
             "rsr": None if s.rsr is None else {"mol": s.rsr.mol.id, "idx": s.rsr.moving_mol.tolist()},

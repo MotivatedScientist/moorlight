@@ -162,6 +162,7 @@ function onServer(m) {
     case "mol_display": applyDisplay(m.mol, m); break;
     case "slice": applySlice(m); break;
     case "figure_preview": setPreview(m.on, m.radius); break;
+    case "figure_dir": S.figureDir = m.dir; break;
     case "annotate": annotate(m); break;
     case "tour": renderTour(m); break;
     case "log": addLog(m.text); break;
@@ -1137,6 +1138,8 @@ function openFigureDialog(tour) {
   dlg.dataset.mode = tour ? "tour" : "single";
   $("#figure-head").textContent = tour ? "Figures of every tour stop" : "Publication figure";
   dlg.querySelectorAll(".single-only").forEach((e) => e.classList.toggle("hidden", !!tour));
+  dlg.querySelectorAll(".tour-only").forEach((e) => e.classList.toggle("hidden", !tour));
+  $("#figure-dir").value = S.figureDir || "";
   dlg.classList.remove("hidden");
 }
 const selSpecs = () => S.selection.map((p) => `${p.mol}#${atomLabel(p.mol, p.idx)}`);
@@ -2076,6 +2079,7 @@ async function init() {
   if (st.tour) renderTour(st.tour);
   if (st.slice) applySlice(st.slice);
   if (st.figure_preview) setPreview(true);
+  S.figureDir = st.figure_dir || "";
   renderMolList();
   connect();
   setTimeout(pushView, 500);   // the server learns this tab's zoom, slab and rotation

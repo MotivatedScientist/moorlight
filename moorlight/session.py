@@ -121,6 +121,7 @@ class Session:
         self.pending: dict[str, asyncio.Future] = {}
         self.loop: asyncio.AbstractEventLoop | None = None
         self.views: dict[str, dict] = self._read_json("views.json", {})
+        self.figure_dir = self._read_json("settings.json", {}).get("figure_dir")   # chosen figure folder (None: <workdir>/figures)
         self.tour = {"title": "", "stops": []}
         self.tour_index = -1
         self.annotations = {"labels": [], "distances": []}   # atom specs set through the API (kept in views / tour stops)
@@ -137,6 +138,37 @@ class Session:
         if mid not in self.molecules:
             raise ValueError("no molecule loaded" if not self.molecules else f"no molecule {mid}")
         return self.molecules[mid]
+
+    def figure_folder(self, out_dir=None, remember=True):
+        """Folder for figures: out_dir (then remembered for this data, in .moorlight/settings.json), else the chosen
+        one, else <workdir>/figures."""
+        if out_dir:
+            d = os.path.abspath(self._path(str(out_dir)))
+            try:
+                os.makedirs(d, exist_ok=True)
+            except OSError as e:
+                raise ValueError(f"cannot use {d} for figures: {e}") from None
+            if remember and d != self.figure_dir:
+                self.figure_dir = d
+                st = self._read_json("settings.json", {})
+                st["figure_dir"] = d
+                self._write_json("settings.json", st)
+                self.broadcast({"type": "figure_dir", "dir": d})
+            return d
+        return self.figure_dir or os.path.join(self.workdir, "figures")
+
+    @command("Set the folder figures are written to (remembered for this data). Without path: back to <workdir>/figures.",
+             {"path": ("string", "folder; ~ and paths relative to the work folder work")}, view_only=True)
+    def set_figure_dir(self, path=None):
+        if path:
+            return {"figure_dir": self.figure_folder(path)}
+        self.figure_dir = None
+        st = self._read_json("settings.json", {})
+        st.pop("figure_dir", None)
+        self._write_json("settings.json", st)
+        d = self.figure_folder()
+        self.broadcast({"type": "figure_dir", "dir": d})
+        return {"figure_dir": d}
 
     def _path(self, p):
         p = os.path.expanduser(p)
@@ -294,6 +326,7 @@ class Session:
         out["view"] = v
         out["refinement_settings"] = self.rsr_settings()
         out["slice"] = self.slice
+        out["figure_dir"] = self.figure_folder()
         if self.rsr is not None:
             out["refinement"] = {"running": True, "moving_atoms": len(self.rsr.moving_mol),
                                  "altloc": self.rsr.altloc, **self.rsr.geometry_stats()}
@@ -350,23 +383,23 @@ class Session:
               "font_pt": ("number", "label size in points (default 7)"),
               "title": ("string", "figure title for the legend"),
               "text": ("string", "what the figure shows, for the legend (default: the tour stop's text)"),
-              "out_dir": ("string", "folder (default <workdir>/figures)"),
+              "out_dir": ("string", "folder (default: the chosen figure folder, else <workdir>/figures); remembered"),
               "pymol": ("boolean", "also write a PyMOL script and cut maps"),
               "look": ("boolean", "figure look (default true): only for the render, main chain of stick models as "
                                   "cartoon and only residues near the labelled atoms (or the centre); off: as on screen"),
               "look_radius": ("number", "Å around the labelled atoms for the figure look (default 5)")}, view_only=True)
     def figure(self, name=None, preset="single", width_mm=None, aspect=None, dpi=300, background="white",
                style="surfaces", maps=None, levels=None, carve=2.0, uncarved=None, palette="standard", font_pt=7.0,
-               title=None, text=None, out_dir=None, pymol=False, look=True, look_radius=5.0):
+               title=None, text=None, out_dir=None, pymol=False, look=True, look_radius=5.0, remember=True):
         """look: only while rendering, draw the main chain of stick models as cartoon and only residues within
         look_radius of the labelled atoms (or of the centre); the view is restored afterwards."""
         if self.preview is not None:          # figure preview on: the look is already applied
             return self._figure(name, preset, width_mm, aspect, dpi, background, style, maps, levels, carve, uncarved,
-                                palette, font_pt, title, text, out_dir, pymol, self.preview["note"])
+                                palette, font_pt, title, text, out_dir, pymol, self.preview["note"], remember)
         saved, note = self._apply_look(look_radius) if look else ({}, None)
         try:
             return self._figure(name, preset, width_mm, aspect, dpi, background, style, maps, levels, carve, uncarved,
-                                palette, font_pt, title, text, out_dir, pymol, note)
+                                palette, font_pt, title, text, out_dir, pymol, note, remember)
         finally:
             self._restore_look(saved)
 
@@ -423,7 +456,7 @@ class Session:
         return {"preview": bool(on), **({"look": self.preview["note"]} if on else {})}
 
     def _figure(self, name, preset, width_mm, aspect, dpi, background, style, maps, levels, carve, uncarved, palette,
-                font_pt, title, text, out_dir, pymol, look_note):
+                font_pt, title, text, out_dir, pymol, look_note, remember=True):
         from . import figure as F
         if preset not in F.PRESETS:
             raise ValueError(f"preset: one of {list(F.PRESETS)}")
@@ -488,7 +521,7 @@ class Session:
                 "hbonds": bool(res.get("hbonds")), "coordination": bool(res.get("coordination")),
                 "look": look_note,
                 "view": self._snapshot()}
-        d = self._path(out_dir) if out_dir else os.path.join(self.workdir, "figures")
+        d = self.figure_folder(out_dir, remember=remember)
         paths = F.write_files(d, name, {**res, "width": W, "height": H}, spec)
         maps_info = [{"name": x.name, "kind": x.kind, "levels": lv, "source": x.source, "rms": x.rms,
                       "resolution": round(x.resolution, 2) if x.resolution else None} for x, lv in map_levels]
@@ -513,13 +546,13 @@ class Session:
     @command("Publication figures of every stop of the current tour (see figure): one set of files per stop, named "
              "after the stop, with its text in the legend, plus figures.md with all legends in order. Takes the "
              "options of figure.",
-             {"out_dir": ("string", "folder (default <workdir>/figures/<tour title>)"),
+             {"out_dir": ("string", "folder; the figures go to <folder>/<tour title> (default: the figure folder); remembered"),
               "options": ("object", "options passed to figure for every stop (preset, dpi, carve, ...)")}, view_only=True)
     def figure_tour(self, out_dir=None, options=None):
         from . import figure as F
         if not self.tour["stops"]:
             raise ValueError("no tour loaded (tour_load) or built (tour_add)")
-        d = self._path(out_dir) if out_dir else os.path.join(self.workdir, "figures", F.slug(self.tour["title"], "tour"))
+        d = os.path.join(self.figure_folder(out_dir), F.slug(self.tour["title"], "tour"))
         opts = {k: v for k, v in (options or {}).items() if k not in ("out_dir", "name", "title", "text")}
         prev = self.preview
         if prev is not None:                  # each stop applies the look around its own labels
@@ -530,7 +563,7 @@ class Session:
             self.tour_goto(index=i)
             time.sleep(0.6)
             nm = f"fig{i + 1:02d}_{F.slug(st.get('name'), 'stop')}"
-            r = self.figure(name=nm, title=st.get("name", ""), text=st.get("text", ""), out_dir=d, **opts)
+            r = self.figure(name=nm, title=st.get("name", ""), text=st.get("text", ""), out_dir=d, remember=False, **opts)
             out.append({"stop": st.get("name"), **r})
             with open(r["files"]["legend"]) as fh:
                 legends.append(f"## Figure {i + 1}: {st.get('name', '')}\n\n" + fh.read())

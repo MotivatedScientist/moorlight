@@ -842,6 +842,32 @@ class Session:
     def push_display(self, m):
         self.broadcast({"type": "mol_display", "mol": m.id, **m.display()})
 
+    @command("Draw only whole residues within `radius` Å of the given atoms (in every visible molecule, or in `mols`), "
+             "like PyMOL's byres ... within: for figures and uncluttered views. clear=true draws everything again. Saved "
+             "views and tour stops keep the zone.",
+             {"atoms": ("array", "atom specs the zone is around"), "radius": ("number", "Å (default 5)"),
+              "mols": ("array", "molecule ids (default: all visible)"), "clear": ("boolean", "draw all residues again")},
+             view_only=True)
+    def show_zone(self, atoms=None, radius=5.0, mols=None, clear=False):
+        targets = [self.molecules[int(i)] for i in mols] if mols else [m for m in self.molecules.values() if m.visible]
+        if clear:
+            for m in targets if mols else self.molecules.values():
+                m.zone = None
+                self.push_display(m)
+            return {"zone": None}
+        if not atoms:
+            raise ValueError("give atoms (or clear=true)")
+        pts = np.array([self.point(a) for a in ([atoms] if isinstance(atoms, str) else atoms)])
+        out = {}
+        for m in targets:
+            if not len(m.xyz):
+                continue
+            d = cKDTree(pts).query(m.xyz)[0]
+            m.zone = sorted({k[:3] for k, dd in zip(m.keys, d) if dd <= float(radius)})
+            self.push_display(m)
+            out[m.name] = [f"{c}/{n}{i}" for c, n, i in m.zone]
+        return {"radius": radius, "residues": out}
+
     @command("Show or hide a molecule, set its carbon colour, drawing style or hydrogens. The panel checkboxes call this too, so "
              "`state` always reports what the user sees.",
              {"mol": ("integer", "molecule id"), "visible": ("boolean", ""), "color": ("string", "css colour for carbons, "
@@ -1045,6 +1071,8 @@ class Session:
             if m:
                 used.add(m.id)
                 m.visible, m.color, m.style, m.hydrogens = d.get("visible", True), d.get("color"), d.get("style"), d.get("hydrogens")
+                zr = d.get("zone_residues")
+                m.zone = None if zr is None else [tuple(k) for k in zr]
                 self.push_display(m)
         named = set()
         for d in snap.get("maps", []):

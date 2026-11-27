@@ -154,6 +154,7 @@ class Molecule:
         self.color = None          # carbon colour override (css), None = default per molecule
         self.style = None          # "sticks" / "lines" (None = viewer default)
         self.hydrogens = None      # show hydrogens (None = viewer default: hidden)
+        self.zone = None           # residue keys (chain, num, icode) to draw; None = all
         self.undo_stack: list[gemmi.Structure] = []
         self.redo_stack: list[gemmi.Structure] = []
         self.fixed: set[tuple] = set()  # atom keys fixed during refinement
@@ -240,7 +241,13 @@ class Molecule:
         }
 
     def display(self):
-        return {"visible": self.visible, "color": self.color, "style": self.style, "hydrogens": self.hydrogens}
+        out = {"visible": self.visible, "color": self.color, "style": self.style, "hydrogens": self.hydrogens,
+               "zone": None, "zone_residues": None}
+        if self.zone is not None:
+            z = {tuple(k) for k in self.zone}
+            out["zone"] = [i for i, k in enumerate(self.keys) if k[:3] in z]
+            out["zone_residues"] = [list(k) for k in sorted(z)]
+        return out
 
     # -------------------------------------------------------------- helpers
     def find_residue(self, chain, num, icode=""):

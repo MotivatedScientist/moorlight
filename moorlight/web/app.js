@@ -285,13 +285,14 @@ function setDisplayFields(mol, d) {
   mol.color = d.color || null;
   if (d.style) mol.style = d.style;
   if (d.hydrogens != null) mol.hideH = !d.hydrogens;
+  if ("zone" in d) mol.zone = d.zone ? new Set(d.zone) : null;
 }
 function applyDisplay(id, d) {
   const mol = S.mols.get(id);
   if (!mol) return;
-  const before = `${mol.color}|${mol.style}|${mol.hideH}`;
+  const before = `${mol.color}|${mol.style}|${mol.hideH}|${mol.zone ? [...mol.zone].join(",") : ""}`;
   setDisplayFields(mol, d);
-  if (`${mol.color}|${mol.style}|${mol.hideH}` !== before) rebuildMolGeometry(id);
+  if (`${mol.color}|${mol.style}|${mol.hideH}|${mol.zone ? [...mol.zone].join(",") : ""}` !== before) rebuildMolGeometry(id);
   renderMolList(); redraw();
 }
 
@@ -367,15 +368,17 @@ function rebuildMolGeometry(id) {
   const d = mol.data;
   for (const ch of [...mol.group.children]) { mol.group.remove(ch); ch.geometry.dispose(); }
   const isH = (i) => d.element[i] === "H";
+  const out = (i) => mol.zone && !mol.zone.has(i);     // outside the shown zone (show_zone)
   const keep = [];  // bond indices to draw
   for (let k = 0; k < d.bonds.length / 2; k++) {
     if (mol.hideH && (isH(d.bonds[2*k]) || isH(d.bonds[2*k+1]))) continue;
+    if (out(d.bonds[2*k]) || out(d.bonds[2*k+1])) continue;
     keep.push(k);
   }
   const bonded = new Uint8Array(d.atoms.length);
   for (const i of d.bonds) bonded[i] = 1;
   const lone = [];
-  for (let i = 0; i < d.atoms.length; i++) if (!bonded[i] && !(mol.hideH && isH(i))) lone.push(i);
+  for (let i = 0; i < d.atoms.length; i++) if (!bonded[i] && !(mol.hideH && isH(i)) && !out(i)) lone.push(i);
   if (mol.style === "lines") {
     const bonds = [];
     for (const k of keep) bonds.push(d.bonds[2*k], d.bonds[2*k+1]);
@@ -468,7 +471,7 @@ function stickMeshes(mol, id, keep, lone) {
   }
   const loneSet = new Set(lone);
   const allBalls = [];
-  for (let i = 0; i < d.atoms.length; i++) if (!(mol.hideH && isH(i))) allBalls.push(i);
+  for (let i = 0; i < d.atoms.length; i++) if (!(mol.hideH && isH(i)) && !(mol.zone && !mol.zone.has(i))) allBalls.push(i);
   if (allBalls.length) {
     const im = new THREE.InstancedMesh(sphereGeo, solidMat, allBalls.length);
     allBalls.forEach((i, n) => {

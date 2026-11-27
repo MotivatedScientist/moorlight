@@ -100,6 +100,7 @@ Underneath is a small HTTP API:
 - **Slices:** `slice` (style `slice`/`mesh`, `atoms=[...]` for a plane through atoms, `fix`, `depth`, `thickness`, `map_id`)
   returns where the plane is and its strongest positive and negative values with the nearest atoms. Saved views and tour
   stops keep the slice.
+- **Zone:** `show_zone atoms=[...] radius=5` draws only whole residues near those atoms (like PyMOL's `byres … within`); `clear=true` undoes it.
 - **Figures:** `figure` (preset, dpi, background, style, levels, carve, palette `cvd`, pymol) and `figure_tour`.
 - **Screenshots:** `screenshot` waits until the view has settled and its map contours are computed. It takes `width`, `crop` and `path`.
 

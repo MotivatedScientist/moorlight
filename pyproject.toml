@@ -27,10 +27,11 @@ Issues = "https://github.com/MotivatedScientist/moorlight/issues"
 
 [project.scripts]
 moorlight = "moorlight.__main__:main"
+moorlight-share = "moorlight.share:main"
 moorlight-mcp = "moorlight.mcp:main"
 
 [tool.setuptools]
 packages = ["moorlight", "moorlight.web"]
 
 [tool.setuptools.package-data]
-moorlight = ["web/*", "skills/*/SKILL.md"]
+moorlight = ["web/*", "web/vendor/*/*", "web/vendor/*/*/*", "skills/*/SKILL.md"]

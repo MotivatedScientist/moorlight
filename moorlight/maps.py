@@ -44,10 +44,49 @@ PRESETS = [
     ("mFo-DFc_omit", "PHImFo-DFc_omit", "diff", "omit mFo-DFc"),
 ]
 
+# TorchRef difference refinement, current layout (difference_data.mtz with dF, PHDELWT and FEXT): dF on the dark
+# phases PHDELWT, weighted by W_Q or W_InVa ("F*W" = amplitudes F times weight column W), and FWT/PHWT there is
+# the extrapolated light map, not 2mFo-DFc. Matched before PRESETS when the file has this layout.
+TORCHREF_DIFFERENCE = [
+    ("dF*W_Q", "PHDELWT", "diff", "light - dark (q-weighted)"),
+    ("dF*W_InVa", "PHDELWT", "diff", "light - dark (W_InVa)"),
+    ("dF", "PHDELWT", "diff", "light - dark (unweighted)"),
+    ("FWT", "PHWT", "2fofc", "extrapolated light (2Fext-Fc)"),
+    ("FC", "PHIC", "2fofc", "Fc (dark + light model)"),
+]
+
 DEFAULT_LEVEL = {"2fofc": 1.5, "diff": 3.0}
 COLORS = {"2fofc": "#3d7fff", "diff": "#00e000"}
 # Shown by default when present (one 2fofc-like and one diff-like, or the WDF map).
-DEFAULT_VISIBLE = {"FWT", "2FOFCWT", "DELFWT", "FOFCWT", "WDF", "FoFo", "mFo-DFc_polder"}
+DEFAULT_VISIBLE = {"FWT", "2FOFCWT", "DELFWT", "FOFCWT", "WDF", "dF*W_Q", "FoFo", "mFo-DFc_polder"}
+
+
+def split_weight(f):
+    """'F*W' -> ('F', 'W'): amplitudes F weighted by column W. 'F' -> ('F', None)."""
+    col, _, w = f.partition("*")
+    return col.strip(), w.strip() or None
+
+
+def weighted_f_phi(mtz, f, phi):
+    """gemmi ComplexAsuData of F*W (see split_weight) with phases phi; reflections missing a value are left out."""
+    col, w = split_weight(f)
+    amp = np.array(mtz.column_with_label(col), dtype=float)
+    if w:
+        amp = amp * np.array(mtz.column_with_label(w), dtype=float)
+    ph = np.deg2rad(np.array(mtz.column_with_label(phi), dtype=float))
+    ok = np.isfinite(amp) & np.isfinite(ph)
+    hkl = np.array(mtz.make_miller_array(), dtype=np.int32)[ok]
+    return gemmi.ComplexAsuData(mtz.cell, mtz.spacegroup, hkl, (amp * np.exp(1j * ph))[ok].astype(np.complex64))
+
+
+def map_from_mtz(mtz, f, phi, sample_rate=3.0, d_min=None):
+    """FFT map of columns f (may be weighted, 'F*W') and phi; d_min leaves out reflections beyond it."""
+    if not d_min and not split_weight(f)[1]:
+        return mtz.transform_f_phi_to_map(f, phi, sample_rate=sample_rate)
+    a = weighted_f_phi(mtz, f, phi) if split_weight(f)[1] else mtz.get_f_phi(f, phi)
+    if d_min:
+        a.value_array[a.make_d_array() < d_min] = 0
+    return a.transform_f_phi_to_map(sample_rate=sample_rate)
 
 
 def detect_columns(mtz: gemmi.Mtz):
@@ -55,8 +94,11 @@ def detect_columns(mtz: gemmi.Mtz):
     labels = {c.label: c.type for c in mtz.columns}
     found = []
     used = set()
-    for f, phi, kind, label in PRESETS:
-        if f in labels and phi in labels:
+    presets = PRESETS
+    if {"dF", "PHDELWT", "FEXT"} <= labels.keys():
+        presets = TORCHREF_DIFFERENCE + PRESETS
+    for f, phi, kind, label in presets:
+        if f not in used and all(c in labels for c in split_weight(f) + (phi,) if c):
             found.append((f, phi, kind, label))
             used.add(f)
     # Generic fallback: any F column followed directly by a P column (cad-style pairs)
@@ -86,7 +128,7 @@ def guess_kind(f_label):
 def check_columns(mtz, f, phi):
     """Raise a readable error unless f is an amplitude-like and phi a phase column of the MTZ."""
     cols = {c.label: c.type for c in mtz.columns}
-    missing = [c for c in (f, phi) if c not in cols]
+    missing = [c for c in split_weight(f) + (phi,) if c and c not in cols]
     if missing:
         raise ValueError(f"column(s) {missing} not in the MTZ; available: {list(cols)} "
                          "(note: MTZ labels cannot contain spaces)")
@@ -139,13 +181,7 @@ class XMap:
     @classmethod
     def from_mtz(cls, mtz, f, phi, kind, label, source, sample_rate=3.0, lazy=False, d_min=None):
         """d_min: leave out reflections beyond this resolution (to compare data sets at matched resolution)."""
-        if d_min:
-            def compute():
-                a = mtz.get_f_phi(f, phi)
-                a.value_array[a.make_d_array() < d_min] = 0
-                return a.transform_f_phi_to_map(sample_rate=sample_rate)
-        else:
-            compute = lambda: mtz.transform_f_phi_to_map(f, phi, sample_rate=sample_rate)
+        compute = lambda: map_from_mtz(mtz, f, phi, sample_rate, d_min)
         # map rms without the FFT (Parseval): sqrt(sum |F|^2 over P1 / V^2), good enough for display
         x = cls(label, None if lazy else compute(), kind, source, f, phi, compute=compute if lazy else None,
                 rms=_rms_estimate(mtz, f, d_min) if lazy else None)
@@ -226,7 +262,10 @@ class XMap:
 
 def _rms_estimate(mtz, f, d_min=None):
     """Real-space rms of a map from its amplitudes (Parseval, F000 excluded)."""
-    col = np.array(mtz.column_with_label(f), dtype=float)
+    c, w = split_weight(f)
+    col = np.array(mtz.column_with_label(c), dtype=float)
+    if w:
+        col = col * np.array(mtz.column_with_label(w), dtype=float)
     if d_min:
         col = col[np.array(mtz.make_d_array()) >= d_min]
     col = col[np.isfinite(col)]

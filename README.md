@@ -94,6 +94,29 @@ the same rules.
 
 `goto` takes `radius` (Å of context around the residue, default 5; 0 = only centre) and `slab` (depth half-thickness in Å).
 
+## Shareable pages (no server)
+
+`moorlight-share` (or `moorlight share`) writes one self-contained HTML viewer page. It runs on a phone, as a
+claude.ai artifact, or as a file opened locally. The page holds the models, their symmetry neighbours, the maps on
+their own grids, and preset slice planes. The browser contours the maps itself (mesh, or an Olex2-style slice).
+
+The page fetches nothing: three.js 0.170.0 (MIT, vendored in `moorlight/web/vendor`) is written into it and it uses
+system fonts. A `--standalone` page can be sent by e-mail or messenger or deposited with a paper and opens offline in
+any current browser with WebGL 2 (on an iPhone, open a link rather than a file preview). Its "About this file" section
+lists the input files with SHA-256 checksums, the Moorlight version and commit, and the build time.
+
+```
+moorlight-share model.pdb maps.mtz --title "Ligand site" --center A/401 --plane "Ring=A/401 C1, A/401 C2, A/401 C3" -o page.html
+moorlight-share /path/to/refinement_folder --title "Dark vs light" --center RET -o page.html   # TorchRef layouts
+moorlight-share 3hs4 --center ZN --plane "Zn site=ZN" -o page.html --standalone            # PDB-REDO entry
+moorlight-share again page.spec.json --plane "Second=A/85; copies=-1,1"                     # same page, more
+```
+
+One command builds the page in a few seconds and prints what it shows (maps, the strongest difference features
+near the centre, each plane with the features in it). Atom specs also take residue names (`RET`, `ZN C1`). Plane
+options: `copies`, `toward`, `perpendicular-to`, `thickness`, `center`, `offset`, `axis`. The bundled
+`moorlight-share` skill, installed with `moorlight --install-skill`, has the agent workflow.
+
 ## Notes / limits (v0.1)
 
 - Real-space refinement uses trilinear interpolation of the map and a simple non-bonded repulsion. Ramachandran restraints are not used yet.

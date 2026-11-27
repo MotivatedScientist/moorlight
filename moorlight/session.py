@@ -17,7 +17,7 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from . import edit
-from .maps import XMap, detect_columns, check_columns, guess_kind, DEFAULT_VISIBLE
+from .maps import XMap, detect_columns, check_columns, guess_kind, split_weight, DEFAULT_VISIBLE
 from .model import BondOrders, Molecule
 
 COMMANDS: dict[str, dict] = {}
@@ -405,7 +405,7 @@ class Session:
             new.append(x)
             if self.refinement_map is None and kind == "2fofc" and f not in ("F-model", "Fc_dark", "Fc_light"):
                 self.refinement_map = x.id
-            if self.diff_map is None and f in ("WDF", "DF"):
+            if self.diff_map is None and split_weight(f)[0] in ("WDF", "DF", "dF"):
                 self.diff_map = x.id
         self.push_maps()
         self.say(f"{os.path.basename(p)}: " + ", ".join(f"[{x.id}] {x.name}" for x in new))
@@ -433,6 +433,9 @@ class Session:
         d = self._path(path)
         names = set(os.listdir(d))
         models = [n for n in ("D.pdb", "L_refined.pdb", "refined.pdb") if n in names]
+        pre = next((n[:-len("difference_data.mtz")] for n in sorted(names) if n.endswith("difference_data.mtz")), None)
+        if not models and pre is not None and pre + "dark.pdb" in names and pre + "light.pdb" in names:
+            models = [pre + "dark.pdb", pre + "light.pdb"]      # current TorchRef layout: <prefix>_dark/_light.pdb
         if not models:
             # e.g. <prefix>_refined.pdb; fall back to the only model in the folder
             models = sorted(n for n in names if n.endswith("refined.pdb")) or \
@@ -441,6 +444,9 @@ class Session:
             models = sorted(n for n in names if n.endswith(("refined.cif", ".mmcif")))[:1]
         mtzs = [n for n in ("refined.mtz", "difference_data.mtz") if n in names] or \
             sorted(n for n in names if n.endswith(".mtz"))
+        if pre is not None and pre + "difference_data.mtz" in mtzs:   # difference maps first: shown, and their extrapolated
+            mtzs.remove(pre + "difference_data.mtz")                     # light map is the refinement map for the light model
+            mtzs.insert(0, pre + "difference_data.mtz")
         # dictionaries: CIFs in the folder, plus the ones named in TorchRef logs ("CIF file: ...")
         cifs = [os.path.join(d, n) for n in sorted(names) if n.endswith(".cif") and "refined" not in n]
         for log in sorted(n for n in names if n.endswith(".log")):
@@ -463,10 +469,12 @@ class Session:
         ids = {n: self.load_model(os.path.join(d, n))["mol"] for n in models}
         for n in mtzs:
             self.load_mtz(os.path.join(d, n))
-        if "D.pdb" in ids and "L_refined.pdb" in ids:
-            self.dark_model = ids["D.pdb"]
-            self.set_active_molecule(ids["L_refined.pdb"])
-            self.say("difference refinement: edits go to L_refined.pdb, D.pdb is the dark reference")
+        pair = next(((d, l) for d, l in (("D.pdb", "L_refined.pdb"), (f"{pre}dark.pdb", f"{pre}light.pdb"))
+                     if d in ids and l in ids), None)
+        if pair:
+            self.dark_model = ids[pair[0]]
+            self.set_active_molecule(ids[pair[1]])
+            self.say(f"difference refinement: edits go to {pair[1]}, {pair[0]} is the dark reference")
         self.push_rsr_settings()
         if not models:
             raise ValueError(f"no models found in {d}")

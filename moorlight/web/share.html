@@ -1,0 +1,320 @@
+<meta charset="utf-8">
+<title>{{TITLE}}</title>
+<meta name="description" content="{{DESCRIPTION}}">
+<style>
+/* Layout: a Coot-black viewport; the tour panel sits below it on an upright phone and beside it in landscape and
+   on wide screens. Full screen hides header and panel and leaves a small floating stop bar. One deliberate dark
+   look (maps read best on black), so no light variant. */
+:root {
+  --ink: #000000;          /* viewport, as in Coot */
+  --panel: #111418;
+  --raise: #1a1f26;
+  --line: #2b323c;
+  --fg: #e3e6e9;
+  --muted: #9aa4af;
+  --accent: #e6c229;       /* carbon yellow of the first model */
+  --pos: #00d000;          /* + contour */
+  --neg: #e00000;          /* - contour */
+  --map: #3d7fff;          /* 2mFo-DFc-like maps */
+  --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;     /* system fonts: the page fetches nothing */
+  --font-data: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  color-scheme: dark;
+}
+html { height: 100%; box-sizing: border-box; }
+*, *::before, *::after { box-sizing: inherit; }
+body { height: 100%; margin: 0; overflow: hidden; background: var(--panel); color: var(--fg);
+  font: 15px/1.45 var(--font-ui); -webkit-text-size-adjust: 100%; }
+button, input { font: inherit; color: inherit; }
+#app { height: 100%; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-areas: "head" "view" "panel"; }
+header { grid-area: head; }
+#viewport { grid-area: view; }
+#panel { grid-area: panel; }
+
+header { display: flex; align-items: center; gap: 12px; min-width: 0; padding-block: 8px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  background: var(--panel); border-bottom: 1px solid var(--line); }
+.titles { min-width: 0; flex: 1; }
+h1 { margin: 0; font-size: 1.12rem; font-weight: 600; line-height: 1.2; letter-spacing: 0.01em; text-wrap: balance; }
+.desc { margin: 2px 0 0; color: var(--muted); font-size: 0.86rem; line-height: 1.3; }
+.desc:empty { display: none; }
+
+button { background: var(--raise); border: 1px solid var(--line); border-radius: 6px; min-height: 36px; min-width: 36px;
+  padding: 0 10px; cursor: pointer; touch-action: manipulation; }
+button:hover { border-color: var(--muted); }
+button:disabled { opacity: 0.4; cursor: default; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+#viewport { position: relative; min-height: 0; overflow: hidden; background: var(--ink); touch-action: none;
+  user-select: none; -webkit-user-select: none; }
+#viewport canvas { display: block; position: absolute; inset: 0; width: 100%; height: 100%; }
+#labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.label { position: absolute; transform: translate(6px, -50%); white-space: nowrap; color: #ffffff;
+  font: 12px var(--font-data); text-shadow: 0 0 3px #000, 0 0 3px #000; }
+.label.dist { color: #99ffff; transform: translate(-50%, 0); }
+#status { position: absolute; left: max(10px, env(safe-area-inset-left, 0px)); right: 10px; bottom: 8px;
+  pointer-events: none; color: var(--fg); font: 12px/1.4 var(--font-data); text-shadow: 0 0 4px #000, 0 0 4px #000;
+  overflow-wrap: anywhere; white-space: pre-line; }
+#loading { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted);
+  font: 14px var(--font-data); }
+
+#panel { min-width: 0; max-height: 44vh; max-height: 44dvh; overflow-y: auto; overscroll-behavior: contain;
+  display: flex; flex-direction: column; gap: 14px; padding-block: 12px 16px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  border-top: 1px solid var(--line); background: var(--panel); }
+
+/* floating controls on the viewport */
+.fab { position: absolute; z-index: 2; background: rgba(17, 20, 24, 0.72); border-color: rgba(154, 164, 175, 0.35);
+  -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); }
+#fullscreen { top: 8px; right: max(8px, env(safe-area-inset-right, 0px)); min-width: 40px; min-height: 40px;
+  display: grid; place-items: center; padding: 0; }
+#fullscreen svg { width: 20px; height: 20px; }
+#front[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+#front[aria-pressed="false"] { color: var(--muted); }
+#mini-nav { position: absolute; z-index: 2; left: 50%; transform: translateX(-50%);
+  bottom: calc(8px + env(safe-area-inset-bottom, 0px)); display: none; align-items: center; gap: 6px;
+  max-width: calc(100% - 24px); padding: 4px; border-radius: 10px; }
+#mini-nav span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 4px;
+  font: 500 0.82rem var(--font-data); color: var(--fg); }
+#mini-nav button { flex: none; }
+
+#app.full { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); grid-template-areas: "view"; }
+#app.full header, #app.full #panel { display: none; }
+#mini-level { position: absolute; z-index: 2; left: 50%; transform: translateX(-50%);
+  bottom: calc(58px + env(safe-area-inset-bottom, 0px)); display: none; grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center; gap: 8px; width: min(440px, calc(100% - 24px)); padding: 2px 10px; border-radius: 10px; }
+#mini-level span { max-width: 9em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 0.8rem var(--font-data);
+  color: var(--muted); }
+#app.full #mini-nav { display: flex; }
+#mini-depth { position: absolute; z-index: 2; left: 50%; transform: translateX(-50%);
+  bottom: calc(108px + env(safe-area-inset-bottom, 0px)); display: none; grid-template-columns: auto minmax(0, 1fr) auto auto auto auto;
+  align-items: center; gap: 8px; width: min(440px, calc(100% - 24px)); padding: 2px 10px; border-radius: 10px; }
+#mini-depth span { font: 0.8rem var(--font-data); color: var(--muted); }
+#mini-depth output { text-align: right; font: 0.85rem var(--font-data); font-variant-numeric: tabular-nums; }
+#app.full #mini-level { display: grid; }
+#app.full.slicing #mini-depth { display: grid; }
+#app.full.slicing #status { bottom: calc(158px + env(safe-area-inset-bottom, 0px)); }
+#app.full #mini-level.none { display: none; }
+#app.full #status { bottom: calc(108px + env(safe-area-inset-bottom, 0px)); }
+#stop-text { max-width: 65ch; font-size: 0.92rem; }
+#stop-text p { margin: 0 0 0.6em; }
+#stop-text p:last-child { margin-bottom: 0; }
+h3 { margin: 0 0 6px; font: 500 0.72rem var(--font-data); letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--muted); }
+#map-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.map { display: flex; flex-direction: column; gap: 2px; }
+.map-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.map input[type=checkbox] { flex: none; width: 20px; height: 20px; margin: 0; accent-color: var(--accent); }
+.map label { min-width: 0; display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.map .name { min-width: 0; overflow-wrap: anywhere; line-height: 1.25; }
+.sw { flex: none; display: inline-flex; gap: 2px; }
+.sw i { display: block; width: 8px; height: 14px; border-radius: 2px; }
+.lvl { display: grid; grid-template-columns: auto minmax(0, 1fr) auto 5.2em; align-items: center; gap: 6px; }
+.map .scale { padding-left: 28px; font: 0.75rem var(--font-data); color: var(--muted); overflow-wrap: anywhere; }
+.lvl output, #mini-level output { text-align: right; font: 0.85rem var(--font-data); font-variant-numeric: tabular-nums; }
+input[type=range] { width: 100%; min-width: 0; height: 32px; margin: 0; accent-color: var(--accent); touch-action: pan-y; }
+.view-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.seg button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.slice-box { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; }
+.ctl-row { display: grid; grid-template-columns: 4.8em minmax(0, 1fr) 4.2em; align-items: center; gap: 8px; }
+.ctl-row label { font-size: 0.85rem; color: var(--muted); }
+.ctl-row output { text-align: right; font: 0.85rem var(--font-data); font-variant-numeric: tabular-nums; }
+.views-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 6px; }
+select { min-width: 0; min-height: 36px; padding: 0 8px; background: var(--raise); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 6px; font: inherit; }
+select:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+details > summary { cursor: pointer; color: var(--muted); font-size: 0.85rem; padding-block: 6px; }
+details[hidden] { display: none; }
+#mol-list { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.mol { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.mol input { flex: none; width: 20px; height: 20px; margin: 0; accent-color: var(--accent); }
+.mol label { display: flex; align-items: center; gap: 8px; min-width: 0; cursor: pointer; }
+.mol .chip { flex: none; width: 14px; height: 14px; border-radius: 50%; }
+#mini-atoms[aria-pressed="false"] { color: var(--muted); }
+#depthbar { position: absolute; z-index: 2; right: max(6px, env(safe-area-inset-right, 0px)); top: 60px;
+  height: min(46%, 340px); width: 34px; touch-action: none; cursor: ns-resize; }
+#depthbar .rail { position: absolute; left: 15px; top: 0; bottom: 0; width: 4px; border-radius: 2px;
+  background: rgba(154, 164, 175, 0.35); }
+#depth-window { position: absolute; left: 3px; right: 3px; border: 1.5px solid var(--accent); border-radius: 6px;
+  background: rgba(230, 194, 41, 0.16); cursor: grab; }
+#depthbar.active #depth-window { background: rgba(230, 194, 41, 0.3); }
+#depth-window .grip { position: absolute; left: -3px; right: -3px; height: 14px; cursor: ns-resize; }
+#depth-window .grip.top { top: -8px; }
+#depth-window .grip.bottom { bottom: -8px; }
+#depth-window .grip::after { content: ""; position: absolute; left: 8px; right: 8px; top: 6px; height: 2px;
+  border-radius: 1px; background: var(--accent); }
+#depth-plane { position: absolute; left: 0; right: 0; height: 0; border-top: 2px solid var(--accent); }
+#depth-pivot { position: absolute; left: 11px; width: 12px; height: 12px; margin-top: -6px; border-radius: 50%;
+  border: 2px solid #ffffff; background: rgba(0, 0, 0, 0.6); pointer-events: none; }
+#depthbar .end { position: absolute; left: 50%; transform: translate(-50%, -110%); top: 0; font: 9px var(--font-data);
+  color: var(--muted); letter-spacing: 0.04em; pointer-events: none; }
+#depthbar .end.back { top: auto; bottom: 0; transform: translate(-50%, 110%); }
+#status { right: 48px !important; }
+#plane-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.plane { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto auto auto; align-items: center; gap: 6px; }
+.plane button:not(.go) { padding: 0 8px; }
+#copy-row { margin-top: 8px; }
+.plane .go { justify-self: stretch; text-align: left; min-width: 0; overflow-wrap: anywhere; font-size: 0.9rem;
+  background: transparent; border-color: transparent; padding: 0 4px; }
+.plane .go:hover { border-color: var(--line); }
+.hint { margin: 0; color: var(--muted); font-size: 0.85rem; }
+.plane input { width: 20px; height: 20px; margin: 0; accent-color: var(--accent); }
+.plane label { display: flex; align-items: center; gap: 8px; min-width: 0; cursor: pointer; }
+.plane .name { min-width: 0; overflow-wrap: anywhere; font-size: 0.9rem; }
+.plane .chip { flex: none; width: 14px; height: 14px; border: 2px solid; border-radius: 2px; }
+#slice-lock[aria-pressed="true"], #mini-lock[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+#slice-live[aria-pressed="false"], #mini-live[aria-pressed="false"] { color: var(--muted); }
+/* with the live plane off, its controls step back */
+#app.live-off .slice-box .ctl-row, #app.live-off #mini-depth input, #app.live-off #mini-depth output { opacity: 0.4; }
+#app:not(.slicing) .slice-only { display: none !important; }
+.help { margin: 0; color: var(--muted); font-size: 0.82rem; max-width: 65ch; }
+.about p { margin: 0 0 0.6em; }
+.about ul { list-style: none; margin: 0 0 0.6em; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.about .hash, .about pre { font: 0.72rem/1.35 var(--font-data); overflow-wrap: anywhere; white-space: pre-wrap; margin: 0; }
+.about li > span:first-child { color: var(--fg); }
+kbd { font: 0.8rem var(--font-data); }
+
+@media (min-width: 900px) and (min-height: 561px) {
+  #app { grid-template-columns: minmax(0, 1fr) 380px; grid-template-rows: auto minmax(0, 1fr);
+    grid-template-areas: "head head" "view panel"; }
+  #panel { max-height: none; border-top: 0; border-left: 1px solid var(--line); }
+}
+/* phone turned sideways: the view keeps the full height, header and panel share a column on the right */
+@media (orientation: landscape) and (max-height: 560px) {
+  #app { grid-template-columns: minmax(0, 1fr) min(330px, 42vw); grid-template-rows: auto minmax(0, 1fr);
+    grid-template-areas: "view head" "view panel"; }
+  header { border-left: 1px solid var(--line); padding-left: 12px; }
+  .desc { display: none; }
+  #panel { max-height: none; border-top: 0; border-left: 1px solid var(--line); padding-left: 12px; }
+}
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto; } }
+</style>
+
+<div id="app">
+  <header>
+    <div class="titles">
+      <h1>{{TITLE}}</h1>
+      <p class="desc">{{DESCRIPTION}}</p>
+    </div>
+  </header>
+  <div id="viewport">
+    <div id="labels"></div>
+    <div id="status" aria-live="polite"></div>
+    <div id="loading">Unpacking maps…</div>
+    <div id="depthbar" role="group" aria-label="Depth: drag the window to move through the structure, its ends to change the slab">
+      <span class="end">front</span>
+      <div class="rail"></div>
+      <div id="depth-window"><div class="grip top"></div><div class="grip bottom"></div></div>
+      <div id="depth-pivot" title="rotation centre"></div>
+      <div id="depth-plane" hidden></div>
+      <span class="end back">back</span>
+    </div>
+    <button id="fullscreen" class="fab" type="button" aria-pressed="false" aria-label="Full screen view"
+      title="Full screen view (F)"></button>    <div id="mini-level" class="fab" role="group" aria-label="Contour level">
+      <span id="mini-level-name"></span>
+      <input type="range" id="mini-level-range" min="0" max="1000" step="1">
+      <output id="mini-level-out" for="mini-level-range"></output>
+    </div>
+    <div id="mini-depth" class="fab slice-only" role="group" aria-label="Slice depth">
+      <span>Depth</span>
+      <input type="range" id="mini-depth-range" min="-8" max="8" step="0.1" value="0" aria-label="Slice depth">
+      <output id="mini-depth-out" for="mini-depth-range">+0.0 Å</output>
+      <button id="mini-lock" type="button" aria-pressed="false" title="Fix the plane in the molecule (L)">Fix plane</button>
+      <button id="mini-save" type="button" title="Keep this plane and place another (S)">Save</button>
+      <button id="mini-live" type="button" aria-pressed="true" title="Show or hide the moving plane">Live plane on</button>
+    </div>
+    <div id="mini-nav" class="fab" role="group" aria-label="Structure">
+      <button id="mini-atoms" type="button" aria-pressed="true" title="Show or hide the structure (A)">Atoms</button>
+    </div>
+  </div>
+  <section id="panel" aria-label="Viewer controls">
+    <div>
+      <h3>Maps</h3>
+      <ul id="map-list"></ul>
+    </div>
+    <div>
+      <h3>Maps drawn as</h3>
+      <div class="view-row seg" id="style-row" role="group" aria-label="Map style">
+        <button type="button" data-style="mesh" aria-pressed="true">Mesh</button>
+        <button type="button" data-style="slice" aria-pressed="false">Slice</button>
+      </div>
+      <div class="slice-only slice-box">
+        <div class="ctl-row">
+          <label for="slice-depth">Depth</label>
+          <input type="range" id="slice-depth" min="-8" max="8" step="0.1" value="0">
+          <output id="slice-depth-out" for="slice-depth">+0.0 Å</output>
+        </div>
+        <div class="ctl-row">
+          <label for="slice-thick">Thickness</label>
+          <input type="range" id="slice-thick" min="0" max="4" step="0.1" value="0">
+          <output id="slice-thick-out" for="slice-thick">thin</output>
+        </div>
+        <div class="ctl-row">
+          <label for="slice-tilt-x">Tilt &#8597;</label>
+          <input type="range" id="slice-tilt-x" min="-90" max="90" step="1" value="0">
+          <output id="slice-tilt-x-out" for="slice-tilt-x">0°</output>
+        </div>
+        <div class="ctl-row">
+          <label for="slice-tilt-y">Tilt &#8596;</label>
+          <input type="range" id="slice-tilt-y" min="-90" max="90" step="1" value="0">
+          <output id="slice-tilt-y-out" for="slice-tilt-y">0°</output>
+        </div>
+        <div class="view-row">
+          <button id="slice-live" type="button" aria-pressed="true" title="Show or hide the moving plane; saved planes stay">Live plane on</button>
+          <button id="slice-lock" type="button" aria-pressed="false" title="Fix the plane in the molecule (L)">Fix plane</button>
+          <button id="slice-atoms" type="button" title="Best plane through the labelled atoms (tap atoms to label them)">Through labelled atoms</button>
+          <button id="slice-face" type="button" title="Plane through the centre, facing you">Face me</button>
+          <button id="slice-save" type="button" title="Keep this plane and place another (S)">Save plane</button>
+        </div>
+      </div>
+    </div>
+    <div>
+      <h3>Planes</h3>
+      <ul id="plane-list" aria-label="Planes" hidden></ul>
+      <div class="ctl-row" id="copy-row" hidden>
+        <label for="copy-offset">Copy offset</label>
+        <input type="range" id="copy-offset" min="-5" max="5" step="0.1" value="1">
+        <output id="copy-offset-out" for="copy-offset">+1.0 Å</output>
+      </div>
+      <p id="planes-empty" class="hint">No planes yet. Choose Slice, place the plane and save it.</p>
+    </div>
+    <div>
+      <h3>Structure</h3>
+      <ul id="mol-list"></ul>
+      <div class="view-row">
+        <button id="hyd" type="button" aria-pressed="false">Hydrogens</button>
+        <button id="front" type="button" aria-pressed="true" title="Hide residues in front of the one at the centre (C)">Hide in front</button>
+        <button id="clear" type="button">Clear labels</button>
+        <button id="reset" type="button">Reset view</button>
+      </div>
+    </div>
+    <details class="help about">
+      <summary>About this file</summary>
+      <div id="about"></div>
+    </details>
+    <details class="help">
+      <summary>Controls</summary>
+      <p>Drag to rotate, pinch to zoom (zoom only magnifies; it never moves you into the structure), move two
+        fingers to pan. The bar at the right edge of the view is the
+        structure from front to back. Its window is the layer you see: drag it to look deeper or less deep, drag its ends to
+        make the layer thinner or thicker, tap the bar to jump. The molecule keeps turning about the same point (the white
+        dot on the bar); double-tap an atom to make it the rotation centre. Tap an atom for its label and the map values there;
+        double-tap to centre on it. Residues in front of the one at the centre that cover it are hidden, with their
+        density; residues bonded to it stay. Hide in front under Structure (or <kbd>C</kbd>) turns this on and off. Sliders set each map's contour level. On a trackpad, two-finger scrolling changes the level of the first visible
+        map, two-finger click and drag pans, pinching zooms. With a mouse, the wheel changes the level, right-drag or Shift-drag pans and
+        Ctrl+wheel zooms. <kbd>F</kbd> shows the view alone, <kbd>,</kbd> <kbd>.</kbd> move in depth and
+        <kbd>[</kbd> <kbd>]</kbd> change the slab, <kbd>A</kbd> hides the structure, <kbd>L</kbd> fixes the
+        slice, <kbd>S</kbd> saves it. The slice faces you and turns with the molecule until you fix it; tilt it with the two angle sliders,
+        or label three or more atoms and put it through them. A thick slice shows the strongest value within the
+        thickness, so features just off the plane appear as well. Live plane off hides the moving plane and leaves the saved ones. Save plane keeps a plane in place (with its
+        own colour) so you can place another. Planes show only in Slice mode, with the map in use; with no map shown they are empty. In the plane list, tap a name to look at that plane;
+        Copy adds a parallel plane at the copy offset; Edit makes it the live plane again. Planes marked "(yours)" are kept in this browser; the others come with the
+        page.</p>
+    </details>
+  </section>
+</div>
+
+<script type="module">
+{{SCRIPT}}
+</script>
+<script type="application/json" id="ml-data">{{DATA}}</script>

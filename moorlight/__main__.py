@@ -44,6 +44,9 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == "cmd":     # client mode: drive a running viewer
         from .client import main as client_main
         sys.exit(client_main(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "share":   # self-contained page for a phone or an artifact; no server
+        from .share import main as share_main
+        sys.exit(share_main(sys.argv[2:]))
     ap = argparse.ArgumentParser(prog="moorlight", description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     ap.add_argument("files", nargs="*", help="PDB/mmCIF models, MTZ files (file.mtz:label names the maps), CCP4 maps (file.map:label), "
                                              "restraint CIFs or TorchRef dirs.\n`moorlight cmd ...` drives a running viewer (see `moorlight cmd --help`)")

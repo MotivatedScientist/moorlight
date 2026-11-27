@@ -54,14 +54,21 @@ function lineMat(width, opts = {}) {
   return m;
 }
 
+// A tab opened while the browser pane is hidden has a 0×0 viewport: keep the last size (or none yet) and size the
+// canvas once it is shown, instead of setting a NaN aspect that leaves the view empty.
+let sized = false;   // the canvas has had a real size at least once
 function resize() {
   const w = vp.clientWidth, h = vp.clientHeight;
+  if (!w || !h) return false;
+  sized = true;
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
   for (const m of lineMaterials) m.resolution.set(w * devicePixelRatio, h * devicePixelRatio);
+  return true;
 }
 window.addEventListener("resize", resize);
+document.addEventListener("visibilitychange", () => { if (!document.hidden && resize()) { redraw(); scheduleContour(true); } });
 
 function updateCamera() {
   camera.position.set(0, 0, S.zoom);
@@ -191,10 +198,13 @@ async function takeScreenshot(opt = {}) {
       await sleep(50);
     }
   }
+  resize();
+  const src = renderer.domElement;
+  if (!sized)
+    throw new Error("the viewer tab is hidden or has zero size (it was opened while the browser pane was hidden); show it and retry");
   needsRender = false;
   render1(); updateLabels();
-  const src = renderer.domElement;
-  const W = src.width, H = src.height, k = W / src.clientWidth;
+  const W = src.width, H = src.height, k = src.clientWidth ? W / src.clientWidth : devicePixelRatio;
   const cv = document.createElement("canvas");
   cv.width = W; cv.height = H;
   const g = cv.getContext("2d");

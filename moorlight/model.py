@@ -82,6 +82,61 @@ def cov_radius(el: str) -> float:
     return gemmi.Element(el).covalent_r if el else 0.77
 
 
+def _altlocs_of(model: gemmi.Model, addr: gemmi.AtomAddress):
+    """Altlocs ('\\0' for none) of the atom a connection partner names, or None if the atom is gone."""
+    try:
+        ch = model[addr.chain_name]
+    except (IndexError, KeyError, ValueError):
+        return None
+    found = []
+    for res in ch:
+        if res.seqid == addr.res_id.seqid and res.name == addr.res_id.name:
+            found += [a.altloc for a in res if a.name == addr.atom_name and a.altloc not in found]
+    return found or None
+
+
+def fix_connections(st: gemmi.Structure):
+    """Make every LINK/SSBOND partner name an atom that exists, so writing keeps it.
+
+    A LINK without an altloc to an atom that exists only as alternate conformers is read with altloc '\\0', and
+    gemmi's writer then cannot find the atom and writes the partner blank (no atom name, no distance). Here
+    such a partner gets the atom's altloc; with several altlocs the link is written once per conformer
+    (matching altlocs of both partners where they share them). Links to atoms that no longer exist are dropped.
+    Returns the number of links changed, added or dropped."""
+    model = st[0]
+    out, changed = [], 0
+    for c in st.connections:
+        opts = []
+        for p in (c.partner1, c.partner2):
+            alts = _altlocs_of(model, p)
+            if alts is None:
+                opts = None
+                break
+            opts.append([p.altloc] if p.altloc in alts else (alts if p.altloc == "\0" else []))
+        if opts is None or not opts[0] or not opts[1]:
+            changed += 1                       # an atom (or the named conformer) is gone
+            continue
+        common = [a for a in opts[0] if a in opts[1] and a != "\0"]
+        pairs = [(a, a) for a in common] if common else [(a, b) for a in opts[0] for b in opts[1]]
+        if pairs == [(c.partner1.altloc, c.partner2.altloc)]:
+            out.append(c)
+            continue
+        changed += 1
+        for i, (a1, a2) in enumerate(pairs):
+            n = gemmi.Connection()
+            n.name = c.name if len(pairs) == 1 else f"{c.name}_{a1.strip(chr(0)) or a2.strip(chr(0)) or i + 1}"
+            n.link_id, n.type, n.asu, n.reported_distance = c.link_id, c.type, c.asu, c.reported_distance
+            n.partner1 = gemmi.AtomAddress(c.partner1.chain_name, c.partner1.res_id.seqid, c.partner1.res_id.name,
+                                           c.partner1.atom_name, a1)
+            n.partner2 = gemmi.AtomAddress(c.partner2.chain_name, c.partner2.res_id.seqid, c.partner2.res_id.name,
+                                           c.partner2.atom_name, a2)
+            out.append(n)
+    if changed:
+        st.connections.clear()
+        st.connections.extend(out)
+    return changed
+
+
 class Molecule:
     _ids = itertools.count(1)
 
@@ -92,6 +147,7 @@ class Molecule:
         self.id = next(self._ids)      # only after a successful read
         self.path = path
         structure.setup_entities()
+        fix_connections(structure)
         self.st = structure
         self.name = name or (os.path.basename(path) if path else f"mol{self.id}")
         self.visible = True
@@ -297,6 +353,7 @@ class Molecule:
 
     def write(self, path):
         self.st.setup_entities()
+        fix_connections(self.st)       # after edits (altconfs added, atoms deleted)
         if path.endswith((".cif", ".mmcif")):
             doc = self.st.make_mmcif_document()
             doc.write_file(path)

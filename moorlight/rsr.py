@@ -19,6 +19,8 @@ import numpy as np
 import torch
 from scipy.spatial import cKDTree
 
+from .model import fix_connections
+
 DEG = np.pi / 180.0
 _torchref_lock = threading.Lock()
 
@@ -170,7 +172,16 @@ class RSRJob:
                     else:
                         a.altloc = "\0"
                         a.occ = 1.0
+        # links follow the same altloc stripping; links to removed atoms or conformers are dropped
+        keep = []
+        for c in sub.connections:
+            if all(p.altloc in ("\0", self.altloc or "\0") for p in (c.partner1, c.partner2)):
+                c.partner1.altloc = c.partner2.altloc = "\0"
+                keep.append(c)
+        sub.connections.clear()
+        sub.connections.extend(keep)
         sub.remove_empty_chains()
+        fix_connections(sub)
         sub.setup_entities()
         fd, tmp = tempfile.mkstemp(suffix=".pdb", prefix="moorlight_rsr_")
         os.close(fd)
